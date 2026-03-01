@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"streambox/internal/media"
 )
@@ -29,9 +30,13 @@ type Config struct {
 
 // Server is the HTTP server for all UPnP/DLNA and file-serving endpoints.
 type Server struct {
-	cfg Config
-	mux *http.ServeMux
+	cfg      Config
+	mux      *http.ServeMux
+	updateID atomic.Int64
 }
+
+// BumpUpdateID increments the SystemUpdateID, signalling content has changed.
+func (s *Server) BumpUpdateID() { s.updateID.Add(1) }
 
 // New creates and configures the HTTP server.
 func New(cfg Config) *Server {
@@ -90,7 +95,7 @@ func (s *Server) contentDirControl(w http.ResponseWriter, r *http.Request) {
 	case "Browse":
 		s.browse(w, r)
 	case "GetSystemUpdateID":
-		soapResp(w, "GetSystemUpdateID", contentDirNS, "<Id>1</Id>")
+		soapResp(w, "GetSystemUpdateID", contentDirNS, fmt.Sprintf("<Id>%d</Id>", s.updateID.Load()))
 	case "GetSortCapabilities":
 		soapResp(w, "GetSortCapabilities", contentDirNS, "<SortCaps></SortCaps>")
 	case "GetSearchCapabilities":

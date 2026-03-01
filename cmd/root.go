@@ -135,6 +135,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	if err := media.Watch(ctx, cfg.MediaDir, func() {
+		log.Printf("Media directory changed, rescanning %s", cfg.MediaDir)
+		if err := lib.Reload(cfg.MediaDir, cfg.RecentDays); err != nil {
+			log.Printf("Rescan error: %v", err)
+			return
+		}
+		log.Printf("Rescan complete: %d video files", lib.VideoCount())
+		srv.BumpUpdateID()
+		ssdpSrv.SendAlive()
+	}); err != nil {
+		log.Printf("Media watcher unavailable: %v", err)
+	}
+
 	go func() {
 		if err := ssdpSrv.Start(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("SSDP error: %v", err)

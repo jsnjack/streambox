@@ -1,6 +1,8 @@
 package media
 
 import (
+	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 var videoExts = map[string]string{
@@ -257,4 +261,74 @@ func (l *Library) Children(containerID string) []Object {
 		}
 	}
 	return result
+}
+
+// Reload rescans the media directory in-place under the write lock.
+func (l *Library) Reload(root string, recentDays int) error {
+	fresh, err := NewLibrary(root, recentDays)
+	if err != nil {
+		return err
+	}
+	l.mu.Lock()
+	l.objects = fresh.objects
+	l.containers = fresh.containers
+	l.videoCount = fresh.videoCount
+	l.counter.Store(fresh.counter.Load())
+	l.mu.Unlock()
+	return nil
+}
+
+// Watch monitors root for file additions/removals and calls onChange (debounced 2s).
+// Subdirectories created at runtime are added to the watch automatically.
+func Watch(ctx context.Context, root string, onChange func()) error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+
+	// Add root and all existing subdirectories.
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		return watcher.Add(path)
+	}); err != nil {
+		watcher.Close()
+		return err
+	}
+
+	go func() {
+		defer watcher.Close()
+		timer := time.NewTimer(0)
+		timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Has(fsnotify.Create) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+					// Watch newly created subdirectories.
+					if event.Has(fsnotify.Create) {
+						if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+							if err := watcher.Add(event.Name); err != nil {
+								log.Printf("media watcher: add dir %s: %v", event.Name, err)
+							}
+						}
+					}
+					timer.Reset(2 * time.Second)
+				}
+			case <-timer.C:
+				onChange()
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Printf("media watcher: %v", err)
+			}
+		}
+	}()
+	return nil
 }

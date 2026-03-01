@@ -25,11 +25,20 @@ type Server struct {
 	location string
 	iface    *net.Interface
 	debug    bool
+	aliveCh  chan struct{}
 }
 
 // New creates a new SSDP server. iface may be nil for auto-detection.
 func New(uuid, location string, iface *net.Interface, debug bool) *Server {
-	return &Server{uuid: uuid, location: location, iface: iface, debug: debug}
+	return &Server{uuid: uuid, location: location, iface: iface, debug: debug, aliveCh: make(chan struct{}, 1)}
+}
+
+// SendAlive triggers an immediate ssdp:alive NOTIFY burst.
+func (s *Server) SendAlive() {
+	select {
+	case s.aliveCh <- struct{}{}:
+	default: // already pending, no need to queue another
+	}
 }
 
 func (s *Server) entries() []entry {
@@ -101,6 +110,8 @@ func (s *Server) Start(ctx context.Context) error {
 			case <-ctx.Done():
 				s.notify(conn, false)
 				return
+			case <-s.aliveCh:
+				s.notify(conn, true)
 			case <-ticker.C:
 				s.notify(conn, true)
 			}
