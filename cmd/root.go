@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"streambox/internal/config"
@@ -107,7 +108,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	log.Printf("Advertising as http://%s:%d", ip, cfg.Port)
 
-	uuid := newUUID()
+	uuid := loadOrCreateUUID()
 	location := fmt.Sprintf("http://%s:%d/device.xml", ip, cfg.Port)
 
 	var iface *net.Interface
@@ -191,6 +192,23 @@ func detectIP(ifaceName string) (string, error) {
 	}
 	defer conn.Close()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String(), nil
+}
+
+func loadOrCreateUUID() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return newUUID()
+	}
+	path := filepath.Join(home, ".config", "streambox", "uuid")
+	if data, err := os.ReadFile(path); err == nil {
+		if u := strings.TrimSpace(string(data)); u != "" {
+			return u
+		}
+	}
+	u := newUUID()
+	_ = os.MkdirAll(filepath.Dir(path), 0755)
+	_ = os.WriteFile(path, []byte(u+"\n"), 0644)
+	return u
 }
 
 func newUUID() string {
