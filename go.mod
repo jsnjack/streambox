@@ -3,6 +3,7 @@ module streambox
 go 1.21
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/spf13/cobra v1.8.0
 	golang.org/x/net v0.22.0
 )

@@ -23,6 +23,7 @@ type Config struct {
 	Name    string
 	UUID    string
 	IP      string
+	Debug   bool
 	Library *media.Library
 }
 
@@ -48,7 +49,14 @@ func New(cfg Config) *Server {
 
 // ListenAndServe starts the HTTP server.
 func (s *Server) ListenAndServe() error {
-	return http.ListenAndServe(fmt.Sprintf(":%d", s.cfg.Port), s.mux)
+	var h http.Handler = s.mux
+	if s.cfg.Debug {
+		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			log.Printf("HTTP %s %s", r.Method, r.URL.Path)
+			s.mux.ServeHTTP(w, r)
+		})
+	}
+	return http.ListenAndServe(fmt.Sprintf(":%d", s.cfg.Port), h)
 }
 
 // ----- UPnP device + service descriptors -----
@@ -109,6 +117,7 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 	req := env.Body.Browse
 
 	var objs []media.Object
+	var parentCtx string
 	total := 0
 
 	if req.BrowseFlag == "BrowseMetadata" {
@@ -118,6 +127,7 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		objs = []media.Object{obj}
+		parentCtx = obj.GetParentID()
 		total = 1
 	} else { // BrowseDirectChildren
 		all := s.cfg.Library.Children(req.ObjectID)
@@ -135,9 +145,10 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 			end = start + req.RequestedCount
 		}
 		objs = all[start:end]
+		parentCtx = req.ObjectID
 	}
 
-	didl := s.buildDIDL(objs)
+	didl := s.buildDIDL(objs, parentCtx)
 	body := fmt.Sprintf(
 		"<Result>%s</Result><NumberReturned>%d</NumberReturned><TotalMatches>%d</TotalMatches><UpdateID>1</UpdateID>",
 		escXML(didl), len(objs), total,
@@ -145,7 +156,11 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 	soapResp(w, "Browse", contentDirNS, body)
 }
 
-func (s *Server) buildDIDL(objs []media.Object) string {
+// buildDIDL generates a DIDL-Lite XML fragment for the given objects.
+// parentCtx is the ID of the container being browsed; it is used as the
+// parentID attribute so that TV back-navigation works correctly even for
+// virtual containers like "Recent" whose items live elsewhere in the tree.
+func (s *Server) buildDIDL(objs []media.Object, parentCtx string) string {
 	var sb strings.Builder
 	sb.WriteString(`<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">`)
 	for _, obj := range objs {
@@ -157,7 +172,7 @@ func (s *Server) buildDIDL(objs []media.Object) string {
 					`<dc:title>%s</dc:title>`+
 					`<upnp:class>object.container.storageFolder</upnp:class>`+
 					`</container>`,
-				o.ID, o.ParentID, n, escXML(o.Title),
+				o.ID, parentCtx, n, escXML(o.Title),
 			)
 		case *media.Item:
 			url := fmt.Sprintf("http://%s:%d/files/%s", s.cfg.IP, s.cfg.Port, o.ID)
@@ -168,7 +183,7 @@ func (s *Server) buildDIDL(objs []media.Object) string {
 					`<upnp:class>object.item.videoItem</upnp:class>`+
 					`<res protocolInfo=%q size="%d">%s</res>`+
 					`</item>`,
-				o.ID, o.ParentID, escXML(o.Title), proto, o.Size, url,
+				o.ID, parentCtx, escXML(o.Title), proto, o.Size, url,
 			)
 		}
 	}

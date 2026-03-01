@@ -3,10 +3,13 @@ package media
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+	"unicode"
 )
 
 var videoExts = map[string]string{
@@ -23,6 +26,70 @@ var videoExts = map[string]string{
 	".ogv":  "video/ogg",
 	".3gp":  "video/3gpp",
 }
+
+// Title-cleaning regexes, ported from rygel-titlefix.
+var (
+	reYear    = regexp.MustCompile(`.*?([21]\d{3})`)
+	reEpFull  = regexp.MustCompile(`(?i).*?(S\d{2}E\d{2})`)
+	reEpCode  = regexp.MustCompile(`(?i)S\d{2}E\d{2}`)
+)
+
+// cleanTitle converts a raw filename stem into a human-readable title.
+// Logic mirrors rygel-titlefix/cmd/utils.go processFilename():
+//   - if a year is found, take everything before it as the title
+//   - else if an episode code (SxxExx) is found, take the prefix
+//   - replace dots with spaces, apply title case, append episode code if present
+func cleanTitle(stem string) string {
+	yearMatch := reYear.FindString(stem)
+	episode := reEpCode.FindString(stem)
+
+	var title string
+	if yearMatch != "" && len(yearMatch) > 4 {
+		title = clearDots(yearMatch[:len(yearMatch)-4])
+	} else {
+		epMatch := reEpFull.FindString(stem)
+		if epMatch != "" {
+			title = clearDots(epMatch[:len(epMatch)-len(episode)])
+		} else {
+			title = clearDots(stem)
+		}
+	}
+
+	if episode != "" {
+		ep := strings.ToUpper(episode)
+		if idx := strings.Index(strings.ToUpper(title), strings.ToUpper(episode)); idx >= 0 {
+			title = title[:idx] + ep
+		} else {
+			title += " " + ep
+		}
+	}
+
+	return titleCase(title)
+}
+
+func clearDots(s string) string {
+	return strings.TrimSpace(strings.ReplaceAll(s, ".", " "))
+}
+
+func titleCase(s string) string {
+	prev := true
+	runes := []rune(s)
+	for i, r := range runes {
+		if unicode.IsSpace(r) {
+			prev = true
+		} else if prev {
+			runes[i] = unicode.ToUpper(r)
+			prev = false
+		}
+	}
+	return string(runes)
+}
+
+const (
+	idRoot   = "0"
+	idAll    = "1"
+	idRecent = "2"
+)
 
 // Object is implemented by both Container and Item.
 type Object interface {
@@ -67,16 +134,36 @@ type Library struct {
 }
 
 // NewLibrary scans root recursively and builds the media index.
-func NewLibrary(root string) (*Library, error) {
+// recentDays controls how many days back the "Recent" virtual folder covers
+// (0 = disable Recent).
+func NewLibrary(root string, recentDays int) (*Library, error) {
 	l := &Library{
 		objects:    make(map[string]Object),
 		containers: make(map[string]*Container),
 	}
-	rootC := &Container{ID: "0", ParentID: "-1", Title: "root"}
-	l.objects["0"] = rootC
-	l.containers["0"] = rootC
+	// Reserve IDs 0 (root), 1 (All), 2 (Recent).
+	l.counter.Store(2)
 
-	if err := l.scan(root, "0"); err != nil {
+	rootC := &Container{ID: idRoot, ParentID: "-1", Title: "root"}
+	l.objects[idRoot] = rootC
+	l.containers[idRoot] = rootC
+
+	allC := &Container{ID: idAll, ParentID: idRoot, Title: "All"}
+	l.objects[idAll] = allC
+	l.containers[idAll] = allC
+	rootC.children = append(rootC.children, idAll)
+
+	recentC := &Container{ID: idRecent, ParentID: idRoot, Title: "Recent"}
+	l.objects[idRecent] = recentC
+	l.containers[idRecent] = recentC
+	rootC.children = append(rootC.children, idRecent)
+
+	cutoff := time.Time{}
+	if recentDays > 0 {
+		cutoff = time.Now().AddDate(0, 0, -recentDays)
+	}
+
+	if err := l.scan(root, idAll, cutoff); err != nil {
 		return nil, err
 	}
 	return l, nil
@@ -86,7 +173,7 @@ func (l *Library) nextID() string {
 	return strconv.FormatInt(l.counter.Add(1), 10)
 }
 
-func (l *Library) scan(dir, parentID string) error {
+func (l *Library) scan(dir, parentID string, recentCutoff time.Time) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
@@ -103,7 +190,7 @@ func (l *Library) scan(dir, parentID string) error {
 				parent.children = append(parent.children, id)
 			}
 			l.mu.Unlock()
-			if err := l.scan(path, id); err != nil {
+			if err := l.scan(path, id, recentCutoff); err != nil {
 				return err
 			}
 		} else {
@@ -116,15 +203,22 @@ func (l *Library) scan(dir, parentID string) error {
 				continue
 			}
 			id := l.nextID()
-			title := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+			stem := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
 			item := &Item{
-				ID: id, ParentID: parentID, Title: title,
-				Path: path, MIMEType: mime, Size: info.Size(),
+				ID:       id,
+				ParentID: parentID,
+				Title:    cleanTitle(stem),
+				Path:     path,
+				MIMEType: mime,
+				Size:     info.Size(),
 			}
 			l.mu.Lock()
 			l.objects[id] = item
 			if parent, ok := l.containers[parentID]; ok {
 				parent.children = append(parent.children, id)
+			}
+			if !recentCutoff.IsZero() && !info.ModTime().Before(recentCutoff) {
+				l.containers[idRecent].children = append(l.containers[idRecent].children, id)
 			}
 			l.videoCount++
 			l.mu.Unlock()
