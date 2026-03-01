@@ -26,7 +26,7 @@ var Version = "dev"
 
 var rootCmd = &cobra.Command{
 	Use:   "streambox",
-	Short: "Minimal DLNA media server for video files",
+	Short: "DLNA media server for video files",
 	RunE:  runServe,
 }
 
