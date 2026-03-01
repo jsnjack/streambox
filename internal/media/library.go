@@ -167,7 +167,7 @@ func NewLibrary(root string, recentDays int) (*Library, error) {
 		cutoff = time.Now().AddDate(0, 0, -recentDays)
 	}
 
-	if err := l.scan(root, idAll, cutoff); err != nil {
+	if err := l.scan(root, idAll, cutoff, true); err != nil {
 		return nil, err
 	}
 	return l, nil
@@ -177,7 +177,7 @@ func (l *Library) nextID() string {
 	return strconv.FormatInt(l.counter.Add(1), 10)
 }
 
-func (l *Library) scan(dir, parentID string, recentCutoff time.Time) error {
+func (l *Library) scan(dir, parentID string, recentCutoff time.Time, flatten bool) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
@@ -188,6 +188,12 @@ func (l *Library) scan(dir, parentID string, recentCutoff time.Time) error {
 		}
 		path := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
+			if flatten {
+				if err := l.scan(path, parentID, recentCutoff, flatten); err != nil {
+					return err
+				}
+				continue
+			}
 			id := l.nextID()
 			c := &Container{ID: id, ParentID: parentID, Title: entry.Name()}
 			l.mu.Lock()
@@ -197,7 +203,7 @@ func (l *Library) scan(dir, parentID string, recentCutoff time.Time) error {
 				parent.children = append(parent.children, id)
 			}
 			l.mu.Unlock()
-			if err := l.scan(path, id, recentCutoff); err != nil {
+			if err := l.scan(path, id, recentCutoff, flatten); err != nil {
 				return err
 			}
 		} else {
