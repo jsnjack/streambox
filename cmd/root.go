@@ -124,7 +124,7 @@ Debug:   cfg.Debug,
 Library: lib,
 })
 
-ssdpSrv := ssdp.New(uuid, location, iface)
+ssdpSrv := ssdp.New(uuid, location, iface, cfg.Debug)
 
 ctx, cancel := context.WithCancel(context.Background())
 defer cancel()

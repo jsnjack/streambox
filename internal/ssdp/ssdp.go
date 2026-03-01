@@ -24,11 +24,12 @@ type Server struct {
 	uuid     string
 	location string
 	iface    *net.Interface
+	debug    bool
 }
 
 // New creates a new SSDP server. iface may be nil for auto-detection.
-func New(uuid, location string, iface *net.Interface) *Server {
-	return &Server{uuid: uuid, location: location, iface: iface}
+func New(uuid, location string, iface *net.Interface, debug bool) *Server {
+	return &Server{uuid: uuid, location: location, iface: iface, debug: debug}
 }
 
 func (s *Server) entries() []entry {
@@ -49,20 +50,39 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen udp4 :%d: %w", ssdpPort, err)
 	}
 	defer conn.Close()
+	if s.debug {
+		log.Printf("ssdp: listening on :%d, advertising %s", ssdpPort, s.location)
+	}
 
 	pc := ipv4.NewPacketConn(conn)
 	_ = pc.SetMulticastTTL(4)
 
 	group := &net.UDPAddr{IP: net.ParseIP(ssdpIP)}
+	joined := 0
 	if s.iface != nil {
-		_ = pc.JoinGroup(s.iface, group)
+		if err := pc.JoinGroup(s.iface, group); err == nil {
+			joined++
+			if s.debug {
+				log.Printf("ssdp: joined multicast group on %s", s.iface.Name)
+			}
+		} else {
+			log.Printf("ssdp: JoinGroup %s: %v", s.iface.Name, err)
+		}
 	} else {
 		ifaces, _ := net.Interfaces()
 		for _, iface := range ifaces {
 			if iface.Flags&net.FlagMulticast != 0 && iface.Flags&net.FlagUp != 0 {
-				_ = pc.JoinGroup(&iface, group)
+				if err := pc.JoinGroup(&iface, group); err == nil {
+					joined++
+					if s.debug {
+						log.Printf("ssdp: joined multicast group on %s", iface.Name)
+					}
+				}
 			}
 		}
+	}
+	if joined == 0 {
+		log.Printf("ssdp: WARNING: failed to join multicast group on any interface — discovery will not work")
 	}
 
 	s.notify(conn, true)
@@ -104,6 +124,9 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 		return
 	}
 	st := ssdpHeader(msg, "ST")
+	if s.debug {
+		log.Printf("ssdp: M-SEARCH from %s ST=%q", src, st)
+	}
 	if st == "" {
 		return
 	}
@@ -124,7 +147,9 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 			s.location, e.nt, e.usn,
 		)
 		if _, err := conn.WriteToUDP([]byte(resp), src); err != nil {
-			log.Printf("ssdp response: %v", err)
+			log.Printf("ssdp: response to %s: %v", src, err)
+		} else if s.debug {
+			log.Printf("ssdp: responded to %s with ST=%s", src, e.nt)
 		}
 	}
 }
