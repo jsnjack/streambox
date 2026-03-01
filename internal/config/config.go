@@ -7,7 +7,7 @@ const DefaultConfig = `# streambox configuration
 # Edit this file, then run: streambox serve --config ~/.config/streambox/config.toml
 
 # Path to the directory containing your video files (required).
-media_dir = "/media/videos"
+media_dir = "~/Videos"
 
 # HTTP port the server listens on.
 port = 8080

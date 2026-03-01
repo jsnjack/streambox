@@ -9,6 +9,7 @@ import (
 "net"
 "os"
 "os/signal"
+	"path/filepath"
 "syscall"
 
 "github.com/spf13/cobra"
@@ -73,6 +74,7 @@ cfg.Debug, _ = cmd.Flags().GetBool("debug")
 if cfg.MediaDir == "" {
 return fmt.Errorf("media directory is required (--media or config file media_dir)")
 }
+cfg.MediaDir = expandHome(cfg.MediaDir)
 
 // Configure logging.
 if cfg.LogFile != "" {
@@ -183,4 +185,16 @@ panic(err)
 b[6] = (b[6] & 0x0f) | 0x40 // version 4
 b[8] = (b[8] & 0x3f) | 0x80 // variant RFC 4122
 return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func expandHome(p string) string {
+if p == "~" || p == "~/" {
+home, _ := os.UserHomeDir()
+return home
+}
+if len(p) >= 2 && p[:2] == "~/" {
+home, _ := os.UserHomeDir()
+return filepath.Join(home, p[2:])
+}
+return p
 }
