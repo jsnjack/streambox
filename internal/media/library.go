@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"hash/fnv"
 	"log"
 	"os"
 	"path/filepath"
@@ -9,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -133,7 +133,6 @@ type Library struct {
 	mu         sync.RWMutex
 	objects    map[string]Object
 	containers map[string]*Container
-	counter    atomic.Int64
 	videoCount int
 }
 
@@ -145,8 +144,6 @@ func NewLibrary(root string, recentDays int) (*Library, error) {
 		objects:    make(map[string]Object),
 		containers: make(map[string]*Container),
 	}
-	// Reserve IDs 0 (root), 1 (All), 2 (Recent).
-	l.counter.Store(2)
 
 	rootC := &Container{ID: idRoot, ParentID: "-1", Title: "root"}
 	l.objects[idRoot] = rootC
@@ -173,8 +170,11 @@ func NewLibrary(root string, recentDays int) (*Library, error) {
 	return l, nil
 }
 
-func (l *Library) nextID() string {
-	return strconv.FormatInt(l.counter.Add(1), 10)
+// pathID returns a stable string ID derived from a filesystem path.
+func pathID(path string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(path))
+	return strconv.FormatUint(h.Sum64(), 10)
 }
 
 func (l *Library) scan(dir, parentID string, recentCutoff time.Time, flatten bool) error {
@@ -194,7 +194,7 @@ func (l *Library) scan(dir, parentID string, recentCutoff time.Time, flatten boo
 				}
 				continue
 			}
-			id := l.nextID()
+			id := pathID(path)
 			c := &Container{ID: id, ParentID: parentID, Title: entry.Name()}
 			l.mu.Lock()
 			l.objects[id] = c
@@ -215,7 +215,7 @@ func (l *Library) scan(dir, parentID string, recentCutoff time.Time, flatten boo
 			if err != nil {
 				continue
 			}
-			id := l.nextID()
+			id := pathID(path)
 			stem := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
 			item := &Item{
 				ID:       id,
@@ -282,7 +282,6 @@ func (l *Library) Reload(root string, recentDays int) error {
 	l.objects = fresh.objects
 	l.containers = fresh.containers
 	l.videoCount = fresh.videoCount
-	l.counter.Store(fresh.counter.Load())
 	l.mu.Unlock()
 	return nil
 }
