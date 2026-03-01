@@ -122,13 +122,24 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	srv := server.New(server.Config{
+	history := &media.WatchHistory{}
+
+	var srv *server.Server
+	srv = server.New(server.Config{
 		Port:    cfg.Port,
 		Name:    cfg.Name,
 		UUID:    uuid,
 		IP:      ip,
 		Debug:   cfg.Debug,
 		Library: lib,
+		History: history,
+		OnFileDelete: func() {
+			if err := lib.Reload(cfg.MediaDir, cfg.RecentDays); err != nil {
+				log.Printf("Rescan error: %v", err)
+				return
+			}
+			srv.BumpUpdateID()
+		},
 	})
 
 	ssdpSrv := ssdp.New(uuid, location, iface, cfg.Debug)

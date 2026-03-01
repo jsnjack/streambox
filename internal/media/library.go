@@ -240,6 +240,32 @@ func (l *Library) scan(dir, parentID string, recentCutoff time.Time, flatten boo
 	return nil
 }
 
+// AllItems returns all video items (flat).
+func (l *Library) AllItems() []*Item {
+	return l.containerItems(idAll)
+}
+
+// RecentItems returns video items from the Recent virtual folder.
+func (l *Library) RecentItems() []*Item {
+	return l.containerItems(idRecent)
+}
+
+func (l *Library) containerItems(containerID string) []*Item {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	c, ok := l.containers[containerID]
+	if !ok {
+		return nil
+	}
+	result := make([]*Item, 0, len(c.children))
+	for _, id := range c.children {
+		if item, ok := l.objects[id].(*Item); ok {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
 // VideoCount returns the total number of indexed video files.
 func (l *Library) VideoCount() int {
 	l.mu.RLock()

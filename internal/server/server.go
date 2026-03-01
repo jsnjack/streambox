@@ -20,12 +20,14 @@ const (
 
 // Config holds the server configuration.
 type Config struct {
-	Port    int
-	Name    string
-	UUID    string
-	IP      string
-	Debug   bool
-	Library *media.Library
+	Port         int
+	Name         string
+	UUID         string
+	IP           string
+	Debug        bool
+	Library      *media.Library
+	History      *media.WatchHistory
+	OnFileDelete func()
 }
 
 // Server is the HTTP server for all UPnP/DLNA and file-serving endpoints.
@@ -49,6 +51,9 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("/contentdirectory/events", handleEvents)
 	s.mux.HandleFunc("/connectionmanager/events", handleEvents)
 	s.mux.HandleFunc("/files/", s.serveFile)
+	s.mux.HandleFunc("/ui", s.serveUI)
+	s.mux.HandleFunc("/ui/watch", s.serveWatch)
+	s.mux.HandleFunc("/ui/delete", s.deleteFile)
 	return s
 }
 
@@ -247,8 +252,155 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", item.MIMEType)
 	w.Header().Set("transferMode.dlna.org", "Streaming")
 	w.Header().Set("contentFeatures.dlna.org", "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000")
+	if s.cfg.History != nil {
+		s.cfg.History.Record(item)
+	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
+
+// ----- Web UI -----
+
+func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
+	watched := s.cfg.History.List()
+	recent := s.cfg.Library.RecentItems()
+	all := s.cfg.Library.AllItems()
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, uiHeader)
+
+	s.renderSection(w, "Recently Watched", watched2items(watched), true)
+	s.renderSection(w, "Recent", recent, false)
+	s.renderSection(w, "All", all, false)
+
+	fmt.Fprint(w, `</body></html>`)
+}
+
+func (s *Server) renderSection(w http.ResponseWriter, title string, items []*media.Item, showEmpty bool) {
+	if len(items) == 0 {
+		if showEmpty {
+			fmt.Fprintf(w, `<div class="section"><h2>%s</h2><p class="empty">Nothing yet.</p></div>`, title)
+		}
+		return
+	}
+	fmt.Fprintf(w, `<div class="section"><h2>%s</h2><ul>`, title)
+	for _, item := range items {
+		fmt.Fprintf(w,
+			`<li><a class="title" href="/ui/watch?id=%s">%s</a>`+
+				`<a class="del" href="/ui/delete?id=%s" onclick="return confirm('Delete %s?')">Delete</a></li>`,
+			item.ID, escXML(item.Title), item.ID, escXML(item.Title))
+	}
+	fmt.Fprint(w, `</ul></div>`)
+}
+
+func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	obj, ok := s.cfg.Library.Get(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	item, ok := obj.(*media.Item)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, uiWatchPage, escXML(item.Title), item.ID, item.MIMEType, escXML(item.Title))
+}
+
+func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	obj, ok := s.cfg.Library.Get(id)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	item, ok := obj.(*media.Item)
+	if !ok {
+		http.Error(w, "not a file", http.StatusBadRequest)
+		return
+	}
+	if err := os.Remove(item.Path); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if s.cfg.History != nil {
+		s.cfg.History.Remove(id)
+	}
+	if s.cfg.OnFileDelete != nil {
+		s.cfg.OnFileDelete()
+	}
+	http.Redirect(w, r, "/ui", http.StatusSeeOther)
+}
+
+func watched2items(ws []media.WatchedItem) []*media.Item {
+	items := make([]*media.Item, len(ws))
+	for i, w := range ws {
+		items[i] = &media.Item{ID: w.ID, Title: w.Title, Path: w.Path}
+	}
+	return items
+}
+
+const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StreamBox</title>
+<style>
+  body{font-family:sans-serif;max-width:700px;margin:2em auto;padding:0 1em;background:#111;color:#eee}
+  input#q{width:100%;box-sizing:border-box;padding:.6em .8em;background:#222;border:1px solid #444;border-radius:4px;color:#eee;font-size:1em;margin-bottom:1.5em}
+  input#q:focus{outline:none;border-color:#666}
+  h2{font-size:1.1em;margin:1.5em 0 .5em;color:#aaa;text-transform:uppercase;letter-spacing:.05em}
+  ul{list-style:none;padding:0;margin:0}
+  li{display:flex;align-items:center;justify-content:space-between;padding:.6em 0;border-bottom:1px solid #222}
+  a.title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#eee;text-decoration:none;margin-right:1em}
+  a.title:hover{color:#fff;text-decoration:underline}
+  a.del{color:#e55;text-decoration:none;font-size:.85em;white-space:nowrap}
+  a.del:hover{color:#f88}
+  p.empty{color:#555;font-size:.9em}
+  .section{display:block}
+</style></head><body>
+<input id="q" type="search" placeholder="Filter…" autocomplete="off" oninput="filter(this.value)">
+<script>
+function filter(q){
+  q=q.toLowerCase();
+  document.querySelectorAll('li').forEach(function(li){
+    li.style.display=li.querySelector('.title').textContent.toLowerCase().includes(q)?'':'none';
+  });
+  document.querySelectorAll('.section').forEach(function(sec){
+    var visible=sec.querySelectorAll('li:not([style*="none"])').length>0;
+    sec.style.display=q&&!visible?'none':'';
+  });
+}
+</script>`
+
+const uiWatchPage = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>%s</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#000;width:100vw;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+  video{flex:1;width:100%%;min-height:0}
+  footer{display:flex;align-items:center;justify-content:space-between;padding:.4em .8em;background:#111}
+  footer h1{color:#eee;font-family:sans-serif;font-size:.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;margin-right:1em}
+  footer a{color:#aaa;font-family:sans-serif;font-size:.85em;text-decoration:none;white-space:nowrap}
+  footer a:hover{color:#fff}
+</style></head><body>
+<video controls autoplay playsinline>
+  <source src="/files/%s" type="%s">
+</video>
+<footer>
+  <h1>%s</h1>
+  <a href="/ui">← Back</a>
+</footer>
+<script>
+document.querySelector('video').addEventListener('loadedmetadata',function(){
+  this.requestFullscreen&&this.requestFullscreen();
+});
+</script>
+</body></html>`
 
 // ----- Helpers -----
 
