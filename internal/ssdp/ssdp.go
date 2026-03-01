@@ -1,0 +1,174 @@
+// Package ssdp implements a minimal UPnP/SSDP discovery server.
+package ssdp
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"strings"
+	"time"
+
+	"golang.org/x/net/ipv4"
+)
+
+const (
+	ssdpIP   = "239.255.255.250"
+	ssdpPort = 1900
+)
+
+type entry struct{ nt, usn string }
+
+// Server handles SSDP multicast discovery for the media server device.
+type Server struct {
+	uuid     string
+	location string
+	iface    *net.Interface
+}
+
+// New creates a new SSDP server. iface may be nil for auto-detection.
+func New(uuid, location string, iface *net.Interface) *Server {
+	return &Server{uuid: uuid, location: location, iface: iface}
+}
+
+func (s *Server) entries() []entry {
+	u := s.uuid
+	return []entry{
+		{"upnp:rootdevice", fmt.Sprintf("uuid:%s::upnp:rootdevice", u)},
+		{fmt.Sprintf("uuid:%s", u), fmt.Sprintf("uuid:%s", u)},
+		{"urn:schemas-upnp-org:device:MediaServer:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:device:MediaServer:1", u)},
+		{"urn:schemas-upnp-org:service:ContentDirectory:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:service:ContentDirectory:1", u)},
+		{"urn:schemas-upnp-org:service:ConnectionManager:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:service:ConnectionManager:1", u)},
+	}
+}
+
+// Start listens for M-SEARCH requests and sends NOTIFY announcements until ctx is done.
+func (s *Server) Start(ctx context.Context) error {
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: ssdpPort})
+	if err != nil {
+		return fmt.Errorf("listen udp4 :%d: %w", ssdpPort, err)
+	}
+	defer conn.Close()
+
+	pc := ipv4.NewPacketConn(conn)
+	_ = pc.SetMulticastTTL(4)
+
+	group := &net.UDPAddr{IP: net.ParseIP(ssdpIP)}
+	if s.iface != nil {
+		_ = pc.JoinGroup(s.iface, group)
+	} else {
+		ifaces, _ := net.Interfaces()
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagMulticast != 0 && iface.Flags&net.FlagUp != 0 {
+				_ = pc.JoinGroup(&iface, group)
+			}
+		}
+	}
+
+	s.notify(conn, true)
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				s.notify(conn, false)
+				return
+			case <-ticker.C:
+				s.notify(conn, true)
+			}
+		}
+	}()
+
+	buf := make([]byte, 2048)
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		n, src, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			log.Printf("ssdp read: %v", err)
+			continue
+		}
+		go s.handle(conn, src, string(buf[:n]))
+	}
+}
+
+func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
+	if !strings.HasPrefix(msg, "M-SEARCH") {
+		return
+	}
+	st := ssdpHeader(msg, "ST")
+	if st == "" {
+		return
+	}
+
+	for _, e := range s.entries() {
+		if st != "ssdp:all" && st != e.nt {
+			continue
+		}
+		resp := fmt.Sprintf(
+			"HTTP/1.1 200 OK\r\n"+
+				"CACHE-CONTROL: max-age=1800\r\n"+
+				"EXT:\r\n"+
+				"LOCATION: %s\r\n"+
+				"SERVER: Linux/1.0 UPnP/1.0 StreamBox/1.0\r\n"+
+				"ST: %s\r\n"+
+				"USN: %s\r\n"+
+				"\r\n",
+			s.location, e.nt, e.usn,
+		)
+		if _, err := conn.WriteToUDP([]byte(resp), src); err != nil {
+			log.Printf("ssdp response: %v", err)
+		}
+	}
+}
+
+func (s *Server) notify(conn *net.UDPConn, alive bool) {
+	dst := &net.UDPAddr{IP: net.ParseIP(ssdpIP), Port: ssdpPort}
+	for _, e := range s.entries() {
+		var msg string
+		if alive {
+			msg = fmt.Sprintf(
+				"NOTIFY * HTTP/1.1\r\n"+
+					"HOST: %s:%d\r\n"+
+					"CACHE-CONTROL: max-age=1800\r\n"+
+					"LOCATION: %s\r\n"+
+					"NT: %s\r\n"+
+					"NTS: ssdp:alive\r\n"+
+					"SERVER: Linux/1.0 UPnP/1.0 StreamBox/1.0\r\n"+
+					"USN: %s\r\n"+
+					"\r\n",
+				ssdpIP, ssdpPort, s.location, e.nt, e.usn,
+			)
+		} else {
+			msg = fmt.Sprintf(
+				"NOTIFY * HTTP/1.1\r\n"+
+					"HOST: %s:%d\r\n"+
+					"NT: %s\r\n"+
+					"NTS: ssdp:byebye\r\n"+
+					"USN: %s\r\n"+
+					"\r\n",
+				ssdpIP, ssdpPort, e.nt, e.usn,
+			)
+		}
+		if _, err := conn.WriteToUDP([]byte(msg), dst); err != nil {
+			log.Printf("ssdp notify: %v", err)
+		}
+	}
+}
+
+func ssdpHeader(msg, key string) string {
+	prefix := strings.ToUpper(key) + ":"
+	for _, line := range strings.Split(msg, "\r\n") {
+		if strings.HasPrefix(strings.ToUpper(line), prefix) {
+			return strings.TrimSpace(line[len(prefix):])
+		}
+	}
+	return ""
+}
