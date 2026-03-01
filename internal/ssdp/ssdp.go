@@ -23,9 +23,10 @@ type entry struct{ nt, usn string }
 type Server struct {
 	uuid     string
 	location string
-	iface    *net.Interface
+	iface    *net.Interface // if set, restrict to this interface; otherwise use all physical
 	debug    bool
 	aliveCh  chan struct{}
+	pc       *ipv4.PacketConn // set during Start
 }
 
 // New creates a new SSDP server. iface may be nil for auto-detection.
@@ -64,30 +65,19 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	pc := ipv4.NewPacketConn(conn)
+	s.pc = pc
 	_ = pc.SetMulticastTTL(4)
 
 	group := &net.UDPAddr{IP: net.ParseIP(ssdpIP)}
 	joined := 0
-	if s.iface != nil {
-		if err := pc.JoinGroup(s.iface, group); err == nil {
+	for _, iface := range s.activeIfaces() {
+		if err := pc.JoinGroup(iface, group); err == nil {
 			joined++
 			if s.debug {
-				log.Printf("ssdp: joined multicast group on %s", s.iface.Name)
+				log.Printf("ssdp: joined multicast group on %s", iface.Name)
 			}
 		} else {
-			log.Printf("ssdp: JoinGroup %s: %v", s.iface.Name, err)
-		}
-	} else {
-		ifaces, _ := net.Interfaces()
-		for _, iface := range ifaces {
-			if iface.Flags&net.FlagMulticast != 0 && iface.Flags&net.FlagUp != 0 {
-				if err := pc.JoinGroup(&iface, group); err == nil {
-					joined++
-					if s.debug {
-						log.Printf("ssdp: joined multicast group on %s", iface.Name)
-					}
-				}
-			}
+			log.Printf("ssdp: JoinGroup %s: %v", iface.Name, err)
 		}
 	}
 	if joined == 0 {
@@ -98,7 +88,9 @@ func (s *Server) Start(ctx context.Context) error {
 	go func() {
 		for i := 0; i < 3; i++ {
 			s.notify(conn, true)
-			time.Sleep(200 * time.Millisecond)
+			if i < 2 {
+				time.Sleep(200 * time.Millisecond)
+			}
 		}
 	}()
 
@@ -173,6 +165,15 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 
 func (s *Server) notify(conn *net.UDPConn, alive bool) {
 	dst := &net.UDPAddr{IP: net.ParseIP(ssdpIP), Port: ssdpPort}
+	for _, iface := range s.activeIfaces() {
+		if s.pc != nil {
+			_ = s.pc.SetMulticastInterface(iface)
+		}
+		s.notifyTo(conn, dst, alive)
+	}
+}
+
+func (s *Server) notifyTo(conn *net.UDPConn, dst *net.UDPAddr, alive bool) {
 	for _, e := range s.entries() {
 		var msg string
 		if alive {
@@ -199,10 +200,47 @@ func (s *Server) notify(conn *net.UDPConn, alive bool) {
 				ssdpIP, ssdpPort, e.nt, e.usn,
 			)
 		}
-		if _, err := conn.WriteToUDP([]byte(msg), dst); err != nil {
-			log.Printf("ssdp notify: %v", err)
+		if _, err := conn.WriteToUDP([]byte(msg), dst); err != nil && s.debug {
+			log.Printf("ssdp notify %s: %v", dst.IP, err)
 		}
 	}
+}
+
+// activeIfaces returns the interfaces to use for sending and joining.
+// If a specific interface was configured, only that one is returned.
+// Otherwise, all physical interfaces with IPv4 addresses are returned.
+func (s *Server) activeIfaces() []*net.Interface {
+	if s.iface != nil {
+		return []*net.Interface{s.iface}
+	}
+	ifaces, _ := net.Interfaces()
+	var result []*net.Interface
+	for i := range ifaces {
+		iface := &ifaces[i]
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagMulticast == 0 {
+			continue
+		}
+		if isVirtual(iface.Name) {
+			continue
+		}
+		addrs, _ := iface.Addrs()
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+				result = append(result, iface)
+				break
+			}
+		}
+	}
+	return result
+}
+
+func isVirtual(name string) bool {
+	for _, prefix := range []string{"veth", "virbr", "lxdbr", "docker", "br-", "tun", "tap"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func ssdpHeader(msg, key string) string {
