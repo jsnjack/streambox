@@ -83,16 +83,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 	cfg.MediaDir = expandHome(cfg.MediaDir)
 
 	// Configure logging.
-	if cfg.LogFile != "" {
-		f, err := os.OpenFile(cfg.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return fmt.Errorf("opening log file %q: %w", cfg.LogFile, err)
-		}
-		defer f.Close()
-		log.SetOutput(io.MultiWriter(os.Stderr, f))
-	}
 	if cfg.Debug {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
+		if cfg.LogFile != "" {
+			f, err := os.OpenFile(cfg.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				return fmt.Errorf("opening log file %q: %w", cfg.LogFile, err)
+			}
+			defer f.Close()
+			log.SetOutput(io.MultiWriter(os.Stderr, f))
+		}
 		log.Println("debug mode enabled")
 	}
 
