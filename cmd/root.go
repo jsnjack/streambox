@@ -23,6 +23,7 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "streambox",
 	Short: "Minimal DLNA media server for video files",
+	RunE:  runServe,
 }
 
 // Execute runs the CLI.
@@ -33,25 +34,29 @@ func Execute() {
 }
 
 func init() {
-	serve := &cobra.Command{
-		Use:   "serve",
-		Short: "Start the DLNA media server",
-		RunE:  runServe,
-	}
-	serve.Flags().StringP("config", "c", "", "Path to TOML config file")
-	serve.Flags().StringP("media", "m", "", "Directory to serve video files from")
-	serve.Flags().IntP("port", "p", 0, "HTTP port (default 8080)")
-	serve.Flags().StringP("name", "n", "", "Friendly device name shown on the TV (default \"StreamBox\")")
-	serve.Flags().StringP("iface", "i", "", "Network interface for SSDP (default: auto-detect)")
-	serve.Flags().BoolP("debug", "d", false, "Enable debug logging")
-	rootCmd.AddCommand(serve)
+	rootCmd.Flags().StringP("config", "c", "", "Path to TOML config file")
+	rootCmd.Flags().StringP("media", "m", "", "Directory to serve video files from")
+	rootCmd.Flags().IntP("port", "p", 0, "HTTP port (default 8080)")
+	rootCmd.Flags().StringP("name", "n", "", "Friendly device name shown on the TV (default \"StreamBox\")")
+	rootCmd.Flags().StringP("iface", "i", "", "Network interface for SSDP (default: auto-detect)")
+	rootCmd.Flags().BoolP("debug", "d", false, "Enable debug logging")
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
 	// Load config: start from defaults, then overlay TOML file, then CLI flags.
 	cfg := config.Defaults()
 
-	if cfgFile, _ := cmd.Flags().GetString("config"); cfgFile != "" {
+	cfgFile, _ := cmd.Flags().GetString("config")
+	if cfgFile == "" {
+		// Auto-detect default config location.
+		if home, err := os.UserHomeDir(); err == nil {
+			def := filepath.Join(home, ".config", "streambox", "config.toml")
+			if _, err := os.Stat(def); err == nil {
+				cfgFile = def
+			}
+		}
+	}
+	if cfgFile != "" {
 		loaded, err := config.Load(cfgFile)
 		if err != nil {
 			return fmt.Errorf("loading config file: %w", err)
@@ -73,7 +78,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.Debug, _ = cmd.Flags().GetBool("debug")
 	}
 	if cfg.MediaDir == "" {
-		return fmt.Errorf("media directory is required (--media or config file media_dir)")
+		cfg.MediaDir = "~/Videos"
 	}
 	cfg.MediaDir = expandHome(cfg.MediaDir)
 
