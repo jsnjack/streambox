@@ -183,6 +183,9 @@ func (l *Library) scan(dir, parentID string, recentCutoff time.Time) error {
 		return err
 	}
 	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
 		path := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
 			id := l.nextID()
