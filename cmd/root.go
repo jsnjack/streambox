@@ -77,9 +77,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("debug") {
 		cfg.Debug, _ = cmd.Flags().GetBool("debug")
 	}
-	if cfg.MediaDir == "" {
-		cfg.MediaDir = "~/Videos"
-	}
 	cfg.MediaDir = expandHome(cfg.MediaDir)
 
 	// Configure logging.

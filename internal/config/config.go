@@ -40,6 +40,7 @@ type Config struct {
 // Defaults returns a Config populated with sensible defaults.
 func Defaults() Config {
 	return Config{
+		MediaDir:   "~/Videos",
 		Port:       8080,
 		Name:       "StreamBox",
 		RecentDays: 14,
