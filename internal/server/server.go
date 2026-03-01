@@ -52,7 +52,7 @@ func (s *Server) ListenAndServe() error {
 	var h http.Handler = s.mux
 	if s.cfg.Debug {
 		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			log.Printf("HTTP %s %s", r.Method, r.URL.Path)
+			log.Printf("HTTP %s %s [%s]", r.Method, r.URL.Path, r.RemoteAddr)
 			s.mux.ServeHTTP(w, r)
 		})
 	}
@@ -77,7 +77,9 @@ func (s *Server) connMgrSCPD(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleEvents(w http.ResponseWriter, r *http.Request) {
-	// Minimal stub; LG TVs attempt subscription but continue without it.
+	// UPnP eventing: return required SID + TIMEOUT so TV doesn't retry/error.
+	w.Header().Set("SID", "uuid:streambox-events-00000000-0000-0000-0000-000000000000")
+	w.Header().Set("TIMEOUT", "Second-1800")
 	w.WriteHeader(http.StatusOK)
 }
 

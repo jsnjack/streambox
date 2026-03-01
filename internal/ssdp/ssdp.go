@@ -85,7 +85,13 @@ func (s *Server) Start(ctx context.Context) error {
 		log.Printf("ssdp: WARNING: failed to join multicast group on any interface — discovery will not work")
 	}
 
-	s.notify(conn, true)
+	// Send 3 initial NOTIFYs spaced 200ms apart (standard DLNA practice).
+	go func() {
+		for i := 0; i < 3; i++ {
+			s.notify(conn, true)
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
 
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)

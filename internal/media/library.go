@@ -29,9 +29,9 @@ var videoExts = map[string]string{
 
 // Title-cleaning regexes, ported from rygel-titlefix.
 var (
-	reYear    = regexp.MustCompile(`.*?([21]\d{3})`)
-	reEpFull  = regexp.MustCompile(`(?i).*?(S\d{2}E\d{2})`)
-	reEpCode  = regexp.MustCompile(`(?i)S\d{2}E\d{2}`)
+	reYear   = regexp.MustCompile(`.*?([21]\d{3})`)
+	reEpFull = regexp.MustCompile(`(?i).*?(S\d{2}E\d{2})`)
+	reEpCode = regexp.MustCompile(`(?i)S\d{2}E\d{2}`)
 )
 
 // cleanTitle converts a raw filename stem into a human-readable title.
