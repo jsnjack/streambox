@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -263,6 +264,9 @@ func (l *Library) containerItems(containerID string) []*Item {
 			result = append(result, item)
 		}
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Title < result[j].Title
+	})
 	return result
 }
 
@@ -295,6 +299,9 @@ func (l *Library) Children(containerID string) []Object {
 			result = append(result, obj)
 		}
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].GetTitle() < result[j].GetTitle()
+	})
 	return result
 }
 
