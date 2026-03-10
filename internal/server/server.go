@@ -170,6 +170,7 @@ func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 	)
 	req, err := http.NewRequest("NOTIFY", callback, strings.NewReader(body))
 	if err != nil {
+		log.Printf("event: bad callback URL %q: %v", callback, err)
 		return
 	}
 	req.Header.Set("Content-Type", "text/xml")
@@ -179,9 +180,12 @@ func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 	req.Header.Set("SEQ", fmt.Sprintf("%d", seq))
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
-	if err == nil {
-		resp.Body.Close()
+	if err != nil {
+		log.Printf("event: NOTIFY %s failed: %v", callback, err)
+		return
 	}
+	resp.Body.Close()
+	log.Printf("event: NOTIFY %s → %s", callback, resp.Status)
 }
 
 // ----- ContentDirectory:1 SOAP control -----
@@ -448,8 +452,11 @@ const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>StreamBox</title>
 <style>
   body{font-family:sans-serif;max-width:700px;margin:2em auto;padding:0 1em;background:#111;color:#eee}
-  input#q{width:100%;box-sizing:border-box;padding:.6em .8em;background:#222;border:1px solid #444;border-radius:4px;color:#eee;font-size:1em;margin-bottom:1.5em}
+  .topbar{display:flex;align-items:stretch;gap:.6em;margin-bottom:1.5em}
+  input#q{flex:1;min-width:0;padding:.6em .8em;background:#222;border:1px solid #444;border-radius:4px;color:#eee;font-size:1em}
   input#q:focus{outline:none;border-color:#666}
+  a.refresh{padding:.6em .9em;background:#222;border:1px solid #444;border-radius:4px;color:#aaa;font-size:.9em;text-decoration:none;white-space:nowrap;display:flex;align-items:center}
+  a.refresh:hover{color:#fff;border-color:#888}
   h2{font-size:1.1em;margin:1.5em 0 .5em;color:#aaa;text-transform:uppercase;letter-spacing:.05em}
   ul{list-style:none;padding:0;margin:0}
   li{display:flex;align-items:center;justify-content:space-between;padding:.6em 0;border-bottom:1px solid #222}
@@ -459,10 +466,6 @@ const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
   a.del:hover{color:#f88}
   p.empty{color:#555;font-size:.9em}
   .section{display:block}
-  .topbar{display:flex;align-items:center;gap:.8em;margin-bottom:1.5em}
-  .topbar input{flex:1;margin-bottom:0}
-  a.refresh{color:#aaa;font-size:.85em;text-decoration:none;border:1px solid #444;border-radius:4px;padding:.5em .8em;white-space:nowrap}
-  a.refresh:hover{color:#fff;border-color:#888}
 </style></head><body>
 <div class="topbar">
 <input id="q" type="search" placeholder="Filter…" autocomplete="off" oninput="filter(this.value)">
