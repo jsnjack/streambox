@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"streambox/internal/media"
 )
@@ -35,10 +37,14 @@ type Server struct {
 	cfg      Config
 	mux      *http.ServeMux
 	updateID atomic.Int64
+	subs     subscriptions
 }
 
-// BumpUpdateID increments the SystemUpdateID, signalling content has changed.
-func (s *Server) BumpUpdateID() { s.updateID.Add(1) }
+// BumpUpdateID increments the SystemUpdateID and notifies all subscribers.
+func (s *Server) BumpUpdateID() {
+	id := s.updateID.Add(1)
+	go s.subs.notify(id)
+}
 
 // New creates and configures the HTTP server.
 func New(cfg Config) *Server {
@@ -48,8 +54,8 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("/connectionmanager.xml", s.connMgrSCPD)
 	s.mux.HandleFunc("/contentdirectory/control", s.contentDirControl)
 	s.mux.HandleFunc("/connectionmanager/control", s.connMgrControl)
-	s.mux.HandleFunc("/contentdirectory/events", handleEvents)
-	s.mux.HandleFunc("/connectionmanager/events", handleEvents)
+	s.mux.HandleFunc("/contentdirectory/events", s.handleEvents)
+	s.mux.HandleFunc("/connectionmanager/events", s.handleEvents)
 	s.mux.HandleFunc("/files/", s.serveFile)
 	s.mux.HandleFunc("/ui", s.serveUI)
 	s.mux.HandleFunc("/ui/watch", s.serveWatch)
@@ -86,11 +92,95 @@ func (s *Server) connMgrSCPD(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, connMgrSCPDXML)
 }
 
-func handleEvents(w http.ResponseWriter, r *http.Request) {
-	// UPnP eventing: return required SID + TIMEOUT so TV doesn't retry/error.
-	w.Header().Set("SID", "uuid:streambox-events-00000000-0000-0000-0000-000000000000")
-	w.Header().Set("TIMEOUT", "Second-1800")
-	w.WriteHeader(http.StatusOK)
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "SUBSCRIBE":
+		callback := strings.Trim(r.Header.Get("CALLBACK"), "<>")
+		if callback == "" {
+			// Renewal — just refresh timeout.
+			w.Header().Set("SID", r.Header.Get("SID"))
+			w.Header().Set("TIMEOUT", "Second-1800")
+			return
+		}
+		sid := s.subs.add(callback)
+		w.Header().Set("SID", sid)
+		w.Header().Set("TIMEOUT", "Second-1800")
+		// Send initial event with current SystemUpdateID.
+		go s.subs.notifyOne(sid, s.updateID.Load())
+	case "UNSUBSCRIBE":
+		s.subs.remove(r.Header.Get("SID"))
+		w.WriteHeader(http.StatusOK)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// subscriptions tracks active UPnP event subscribers.
+type subscriptions struct {
+	mu   sync.Mutex
+	subs map[string]string // sid → callback URL
+	seq  atomic.Int64
+}
+
+func (ss *subscriptions) add(callback string) string {
+	sid := fmt.Sprintf("uuid:streambox-sub-%d", time.Now().UnixNano())
+	ss.mu.Lock()
+	if ss.subs == nil {
+		ss.subs = make(map[string]string)
+	}
+	ss.subs[sid] = callback
+	ss.mu.Unlock()
+	return sid
+}
+
+func (ss *subscriptions) remove(sid string) {
+	ss.mu.Lock()
+	delete(ss.subs, sid)
+	ss.mu.Unlock()
+}
+
+func (ss *subscriptions) notify(updateID int64) {
+	ss.mu.Lock()
+	callbacks := make(map[string]string, len(ss.subs))
+	for sid, cb := range ss.subs {
+		callbacks[sid] = cb
+	}
+	ss.mu.Unlock()
+	for sid, cb := range callbacks {
+		ss.notifyOne(sid, updateID)
+		_ = cb
+	}
+}
+
+func (ss *subscriptions) notifyOne(sid string, updateID int64) {
+	ss.mu.Lock()
+	callback, ok := ss.subs[sid]
+	ss.mu.Unlock()
+	if !ok {
+		return
+	}
+	seq := ss.seq.Add(1) - 1
+	body := fmt.Sprintf(
+		`<?xml version="1.0"?>`+
+			`<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">`+
+			`<e:property><SystemUpdateID>%d</SystemUpdateID></e:property>`+
+			`</e:propertyset>`,
+		updateID,
+	)
+	req, err := http.NewRequest("NOTIFY", callback, strings.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "text/xml")
+	req.Header.Set("NT", "upnp:event")
+	req.Header.Set("NTS", "upnp:propchange")
+	req.Header.Set("SID", sid)
+	req.Header.Set("SEQ", fmt.Sprintf("%d", seq))
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
 }
 
 // ----- ContentDirectory:1 SOAP control -----
