@@ -258,8 +258,8 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 
 	didl := s.buildDIDL(objs, parentCtx)
 	body := fmt.Sprintf(
-		"<Result>%s</Result><NumberReturned>%d</NumberReturned><TotalMatches>%d</TotalMatches><UpdateID>1</UpdateID>",
-		escXML(didl), len(objs), total,
+		"<Result>%s</Result><NumberReturned>%d</NumberReturned><TotalMatches>%d</TotalMatches><UpdateID>%d</UpdateID>",
+		escXML(didl), len(objs), total, s.updateID.Load(),
 	)
 	soapResp(w, "Browse", contentDirNS, body)
 }
