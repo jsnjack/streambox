@@ -30,6 +30,7 @@ type Config struct {
 	Library      *media.Library
 	History      *media.WatchHistory
 	OnFileDelete func()
+	OnRefresh    func() // called on manual refresh; should send SSDP alive burst
 }
 
 // Server is the HTTP server for all UPnP/DLNA and file-serving endpoints.
@@ -406,6 +407,9 @@ func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) refreshLibrary(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.OnFileDelete != nil {
 		s.cfg.OnFileDelete()
+	}
+	if s.cfg.OnRefresh != nil {
+		s.cfg.OnRefresh()
 	}
 	http.Redirect(w, r, "/ui", http.StatusSeeOther)
 }

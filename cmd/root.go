@@ -125,6 +125,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	history := &media.WatchHistory{}
 
 	var srv *server.Server
+	var ssdpSrv *ssdp.Server
 	srv = server.New(server.Config{
 		Port:    cfg.Port,
 		Name:    cfg.Name,
@@ -140,9 +141,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}
 			srv.BumpUpdateID()
 		},
+		OnRefresh: func() {
+			if ssdpSrv != nil {
+				ssdpSrv.SendAlive()
+			}
+		},
 	})
 
-	ssdpSrv := ssdp.New(uuid, location, iface, cfg.Debug)
+	ssdpSrv = ssdp.New(uuid, location, iface, cfg.Debug)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
