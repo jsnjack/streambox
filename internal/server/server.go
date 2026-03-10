@@ -60,6 +60,7 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("/ui", s.serveUI)
 	s.mux.HandleFunc("/ui/watch", s.serveWatch)
 	s.mux.HandleFunc("/ui/delete", s.deleteFile)
+	s.mux.HandleFunc("/ui/refresh", s.refreshLibrary)
 	return s
 }
 
@@ -398,6 +399,13 @@ func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, uiWatchPage, escXML(item.Title), item.ID, item.MIMEType, escXML(item.Title))
 }
 
+func (s *Server) refreshLibrary(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.OnFileDelete != nil {
+		s.cfg.OnFileDelete()
+	}
+	http.Redirect(w, r, "/ui", http.StatusSeeOther)
+}
+
 func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
@@ -451,8 +459,15 @@ const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
   a.del:hover{color:#f88}
   p.empty{color:#555;font-size:.9em}
   .section{display:block}
+  .topbar{display:flex;align-items:center;gap:.8em;margin-bottom:1.5em}
+  .topbar input{flex:1;margin-bottom:0}
+  a.refresh{color:#aaa;font-size:.85em;text-decoration:none;border:1px solid #444;border-radius:4px;padding:.5em .8em;white-space:nowrap}
+  a.refresh:hover{color:#fff;border-color:#888}
 </style></head><body>
+<div class="topbar">
 <input id="q" type="search" placeholder="Filter…" autocomplete="off" oninput="filter(this.value)">
+<a class="refresh" href="/ui/refresh">Refresh TV</a>
+</div>
 <script>
 function filter(q){
   q=q.toLowerCase();
