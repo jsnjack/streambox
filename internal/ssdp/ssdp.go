@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/ipv4"
@@ -27,6 +28,9 @@ type Server struct {
 	debug    bool
 	aliveCh  chan struct{}
 	pc       *ipv4.PacketConn // set during Start
+
+	lastByebye   time.Time // rate-limit byebye+alive cycles
+	lastByebyeMu sync.Mutex
 }
 
 // New creates a new SSDP server. iface may be nil for auto-detection.
@@ -141,9 +145,21 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 	}
 
 	// Send byebye+alive cycle to force clients (LG TVs) to drop cached content.
-	s.notify(conn, false)
-	time.Sleep(200 * time.Millisecond)
-	s.notify(conn, true)
+	// Rate-limited to avoid disrupting active playback from frequent M-SEARCHes.
+	s.lastByebyeMu.Lock()
+	doBye := time.Since(s.lastByebye) > 5*time.Minute
+	if doBye {
+		s.lastByebye = time.Now()
+	}
+	s.lastByebyeMu.Unlock()
+	if doBye {
+		if s.debug {
+			log.Printf("ssdp: sending byebye+alive cycle (cache bust)")
+		}
+		s.notify(conn, false)
+		time.Sleep(200 * time.Millisecond)
+		s.notify(conn, true)
+	}
 
 	for _, e := range s.entries() {
 		if st != "ssdp:all" && st != e.nt {

@@ -113,7 +113,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	log.Printf("Advertising as http://%s:%d", ip, cfg.Port)
 
 	uuid := loadOrCreateUUID()
-	updateID := loadUpdateID()
+	updateID := loadUpdateID() + 1 // always bump on startup to invalidate stale caches
+	saveUpdateID(updateID)
 	location := fmt.Sprintf("http://%s:%d/device.xml", ip, cfg.Port)
 
 	var iface *net.Interface

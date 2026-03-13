@@ -283,11 +283,11 @@ func (s *Server) buildDIDL(objs []media.Object, parentCtx string) string {
 		case *media.Container:
 			n := len(s.cfg.Library.Children(o.ID))
 			fmt.Fprintf(&sb,
-				`<container id=%q parentID=%q restricted="1" childCount="%d">`+
+				`<container id=%q parentID=%q restricted="1" childCount="%d" containerUpdateID="%d">`+
 					`<dc:title>%s</dc:title>`+
 					`<upnp:class>object.container.storageFolder</upnp:class>`+
 					`</container>`,
-				o.ID, parentCtx, n, escXML(o.Title),
+				o.ID, parentCtx, n, s.updateID.Load(), escXML(o.Title),
 			)
 		case *media.Item:
 			url := fmt.Sprintf("http://%s:%d/files/%s", s.cfg.IP, s.cfg.Port, o.ID)
