@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -112,6 +113,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	log.Printf("Advertising as http://%s:%d", ip, cfg.Port)
 
 	uuid := loadOrCreateUUID()
+	updateID := loadUpdateID()
 	location := fmt.Sprintf("http://%s:%d/device.xml", ip, cfg.Port)
 
 	var iface *net.Interface
@@ -139,7 +141,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				log.Printf("Rescan error: %v", err)
 				return
 			}
-			srv.BumpUpdateID()
+			saveUpdateID(srv.BumpUpdateID())
 		},
 		OnRefresh: func() {
 			if ssdpSrv != nil {
@@ -147,6 +149,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}
 		},
 	})
+	srv.SetUpdateID(updateID)
 
 	ssdpSrv = ssdp.New(uuid, location, iface, cfg.Debug)
 
@@ -160,7 +163,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return
 		}
 		log.Printf("Rescan complete: %d video files", lib.VideoCount())
-		srv.BumpUpdateID()
+		saveUpdateID(srv.BumpUpdateID())
 		ssdpSrv.SendAlive()
 	}); err != nil {
 		log.Printf("Media watcher unavailable: %v", err)
@@ -239,6 +242,24 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant RFC 4122
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func updateIDPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "streambox", "updateid")
+}
+
+func loadUpdateID() int64 {
+	data, err := os.ReadFile(updateIDPath())
+	if err != nil {
+		return 0
+	}
+	id, _ := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	return id
+}
+
+func saveUpdateID(id int64) {
+	_ = os.WriteFile(updateIDPath(), []byte(strconv.FormatInt(id, 10)+"\n"), 0644)
 }
 
 func expandHome(p string) string {

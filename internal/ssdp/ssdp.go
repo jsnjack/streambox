@@ -140,6 +140,11 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 		return
 	}
 
+	// Send byebye+alive cycle to force clients (LG TVs) to drop cached content.
+	s.notify(conn, false)
+	time.Sleep(200 * time.Millisecond)
+	s.notify(conn, true)
+
 	for _, e := range s.entries() {
 		if st != "ssdp:all" && st != e.nt {
 			continue

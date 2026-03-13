@@ -41,10 +41,17 @@ type Server struct {
 	subs     subscriptions
 }
 
+// SetUpdateID sets the initial SystemUpdateID (e.g. loaded from disk).
+func (s *Server) SetUpdateID(id int64) {
+	s.updateID.Store(id)
+}
+
 // BumpUpdateID increments the SystemUpdateID and notifies all subscribers.
-func (s *Server) BumpUpdateID() {
+// It returns the new value so the caller can persist it.
+func (s *Server) BumpUpdateID() int64 {
 	id := s.updateID.Add(1)
 	go s.subs.notify(id)
+	return id
 }
 
 // New creates and configures the HTTP server.
