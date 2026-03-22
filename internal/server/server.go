@@ -106,14 +106,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	case "SUBSCRIBE":
 		callback := strings.Trim(r.Header.Get("CALLBACK"), "<>")
 		if callback == "" {
-			// Renewal — just refresh timeout.
+			// Renewal — refresh timeout.
+			s.subs.renew(r.Header.Get("SID"))
 			w.Header().Set("SID", r.Header.Get("SID"))
-			w.Header().Set("TIMEOUT", "Second-1800")
+			w.Header().Set("TIMEOUT", fmt.Sprintf("Second-%d", int(subTimeout.Seconds())))
 			return
 		}
 		sid := s.subs.add(callback)
 		w.Header().Set("SID", sid)
-		w.Header().Set("TIMEOUT", "Second-1800")
+		w.Header().Set("TIMEOUT", fmt.Sprintf("Second-%d", int(subTimeout.Seconds())))
 		// Send initial event with current SystemUpdateID.
 		go s.subs.notifyOne(sid, s.updateID.Load())
 	case "UNSUBSCRIBE":
@@ -125,9 +126,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // subscriptions tracks active UPnP event subscribers.
+const subTimeout = 1800 * time.Second
+
+var notifyClient = &http.Client{Timeout: 5 * time.Second}
+
+type subscription struct {
+	callback string
+	expiry   time.Time
+}
+
 type subscriptions struct {
 	mu   sync.Mutex
-	subs map[string]string // sid → callback URL
+	subs map[string]subscription // sid → subscription
 	seq  atomic.Int64
 }
 
@@ -135,11 +145,27 @@ func (ss *subscriptions) add(callback string) string {
 	sid := fmt.Sprintf("uuid:streambox-sub-%d", time.Now().UnixNano())
 	ss.mu.Lock()
 	if ss.subs == nil {
-		ss.subs = make(map[string]string)
+		ss.subs = make(map[string]subscription)
 	}
-	ss.subs[sid] = callback
+	// Purge expired entries while we have the lock.
+	now := time.Now()
+	for id, s := range ss.subs {
+		if now.After(s.expiry) {
+			delete(ss.subs, id)
+		}
+	}
+	ss.subs[sid] = subscription{callback: callback, expiry: now.Add(subTimeout)}
 	ss.mu.Unlock()
 	return sid
+}
+
+func (ss *subscriptions) renew(sid string) {
+	ss.mu.Lock()
+	if s, ok := ss.subs[sid]; ok {
+		s.expiry = time.Now().Add(subTimeout)
+		ss.subs[sid] = s
+	}
+	ss.mu.Unlock()
 }
 
 func (ss *subscriptions) remove(sid string) {
@@ -150,20 +176,24 @@ func (ss *subscriptions) remove(sid string) {
 
 func (ss *subscriptions) notify(updateID int64) {
 	ss.mu.Lock()
-	callbacks := make(map[string]string, len(ss.subs))
-	for sid, cb := range ss.subs {
-		callbacks[sid] = cb
+	now := time.Now()
+	active := make(map[string]string, len(ss.subs))
+	for sid, s := range ss.subs {
+		if now.Before(s.expiry) {
+			active[sid] = s.callback
+		} else {
+			delete(ss.subs, sid)
+		}
 	}
 	ss.mu.Unlock()
-	for sid, cb := range callbacks {
+	for sid := range active {
 		ss.notifyOne(sid, updateID)
-		_ = cb
 	}
 }
 
 func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 	ss.mu.Lock()
-	callback, ok := ss.subs[sid]
+	s, ok := ss.subs[sid]
 	ss.mu.Unlock()
 	if !ok {
 		return
@@ -176,9 +206,9 @@ func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 			`</e:propertyset>`,
 		updateID,
 	)
-	req, err := http.NewRequest("NOTIFY", callback, strings.NewReader(body))
+	req, err := http.NewRequest("NOTIFY", s.callback, strings.NewReader(body))
 	if err != nil {
-		log.Printf("event: bad callback URL %q: %v", callback, err)
+		log.Printf("event: bad callback URL %q: %v", s.callback, err)
 		return
 	}
 	req.Header.Set("Content-Type", "text/xml")
@@ -186,14 +216,13 @@ func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 	req.Header.Set("NTS", "upnp:propchange")
 	req.Header.Set("SID", sid)
 	req.Header.Set("SEQ", fmt.Sprintf("%d", seq))
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := notifyClient.Do(req)
 	if err != nil {
-		log.Printf("event: NOTIFY %s failed: %v", callback, err)
+		log.Printf("event: NOTIFY %s failed: %v", s.callback, err)
 		return
 	}
 	resp.Body.Close()
-	log.Printf("event: NOTIFY %s → %s", callback, resp.Status)
+	log.Printf("event: NOTIFY %s → %s", s.callback, resp.Status)
 }
 
 // ----- ContentDirectory:1 SOAP control -----
