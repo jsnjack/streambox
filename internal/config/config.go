@@ -25,6 +25,12 @@ log_file = "/tmp/streambox.log"
 
 # Enable verbose debug logging (HTTP requests, SSDP activity).
 debug = false
+
+# When enabled, streambox watches for new subfolders inside media_dir.
+# Once a subfolder's contents are stable (no changes for 5 seconds),
+# all video files are moved into media_dir and the subfolder is removed.
+# Useful when a download client places each release in its own folder.
+# flatten = false
 `
 
 // Config holds all streambox settings.
@@ -35,6 +41,11 @@ type Config struct {
 	RecentDays int    `toml:"recent_days"`
 	Debug      bool   `toml:"debug"`
 	LogFile    string `toml:"log_file"`
+	// Flatten moves video files from newly-detected subfolders into the root
+	// media_dir and removes the now-empty subfolder. Useful when a downloader
+	// puts each release in its own directory. The folder is only processed once
+	// its contents stop changing (5-second stability window).
+	Flatten bool `toml:"flatten"`
 }
 
 // Defaults returns a Config populated with sensible defaults.

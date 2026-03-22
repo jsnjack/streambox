@@ -170,6 +170,21 @@ func runServe(cmd *cobra.Command, args []string) error {
 		log.Printf("Media watcher unavailable: %v", err)
 	}
 
+	if cfg.Flatten {
+		if err := media.WatchAndFlatten(ctx, cfg.MediaDir, func() {
+			log.Printf("Flatten complete, rescanning %s", cfg.MediaDir)
+			if err := lib.Reload(cfg.MediaDir, cfg.RecentDays); err != nil {
+				log.Printf("Rescan error: %v", err)
+				return
+			}
+			log.Printf("Rescan complete: %d video files", lib.VideoCount())
+			saveUpdateID(srv.BumpUpdateID())
+			ssdpSrv.SendAlive()
+		}); err != nil {
+			log.Printf("Flatten watcher unavailable: %v", err)
+		}
+	}
+
 	go func() {
 		if err := ssdpSrv.Start(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("SSDP error: %v", err)

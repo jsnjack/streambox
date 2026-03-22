@@ -21,3 +21,9 @@ log_file = "/tmp/streambox.log"
 
 # Enable verbose debug logging (HTTP requests, SSDP activity).
 debug = false
+
+# When enabled, streambox watches for new subfolders inside media_dir.
+# Once a subfolder's contents are stable (no changes for 5 seconds),
+# all video files are moved into media_dir and the subfolder is removed.
+# Useful when a download client places each release in its own folder.
+# flatten = false
