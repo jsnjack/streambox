@@ -84,6 +84,22 @@ func flattenDir(dir, root string) {
 	}
 }
 
+// hasVideoFiles reports whether dir contains at least one video file.
+func hasVideoFiles(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if _, ok := videoExts[filepath.Ext(d.Name())]; ok {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
 // WatchAndFlatten scans root for existing subdirectories on startup, then
 // watches for new ones. When a subdirectory's contents stop changing for 5
 // seconds, all video files inside it are moved into root and the subdirectory
@@ -153,13 +169,27 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 						continue
 					}
 					curr := snapshotDir(dir)
-					if curr.equal(prev) && len(curr.entries) > 0 {
-						delete(pending, dir)
-						flattenDir(dir, root)
-						onFlatten()
-					} else {
+					if !curr.equal(prev) {
 						// Still changing — update snapshot and wait another tick.
 						pending[dir] = curr
+						continue
+					}
+					delete(pending, dir)
+					if len(curr.entries) == 0 {
+						// Stable but empty — remove it.
+						log.Printf("flatten: removing empty dir %s", dir)
+						if err := os.RemoveAll(dir); err != nil {
+							log.Printf("flatten: remove %s: %v", dir, err)
+						}
+					} else if !hasVideoFiles(dir) {
+						// Stable but contains no video files — remove it.
+						log.Printf("flatten: removing non-video dir %s", dir)
+						if err := os.RemoveAll(dir); err != nil {
+							log.Printf("flatten: remove %s: %v", dir, err)
+						}
+					} else {
+						flattenDir(dir, root)
+						onFlatten()
 					}
 				}
 
