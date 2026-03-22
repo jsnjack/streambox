@@ -82,10 +82,10 @@ func flattenDir(dir, root string) {
 	}
 }
 
-// WatchAndFlatten watches root for new subdirectories. When a subdirectory's
-// contents stop changing for 5 seconds, all video files inside it are moved
-// into root and the subdirectory is deleted. onFlatten is called after each
-// successful flatten operation.
+// WatchAndFlatten scans root for existing subdirectories on startup, then
+// watches for new ones. When a subdirectory's contents stop changing for 5
+// seconds, all video files inside it are moved into root and the subdirectory
+// is deleted. onFlatten is called after each successful flatten operation.
 func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -98,6 +98,21 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 
 	// pending tracks directories waiting for their stability check.
 	pending := make(map[string]dirProfile)
+
+	// Seed pending with any subdirectories that already exist at startup.
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		watcher.Close()
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, e.Name())
+		log.Printf("flatten: existing dir queued: %s", dir)
+		pending[dir] = snapshotDir(dir)
+	}
 
 	// stabilityCheck fires every 5 seconds to re-evaluate pending directories.
 	ticker := time.NewTicker(5 * time.Second)
