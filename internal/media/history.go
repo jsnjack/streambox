@@ -1,6 +1,9 @@
 package media
 
-import "sync"
+import (
+	"os"
+	"sync"
+)
 
 const maxHistory = 10
 
@@ -35,10 +38,18 @@ func (h *WatchHistory) Record(item *Item) {
 	}
 }
 
-// List returns a snapshot of the watch history.
+// List returns a snapshot of the watch history, removing entries whose files
+// no longer exist on disk.
 func (h *WatchHistory) List() []WatchedItem {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	filtered := h.items[:0]
+	for _, w := range h.items {
+		if _, err := os.Stat(w.Path); err == nil {
+			filtered = append(filtered, w)
+		}
+	}
+	h.items = filtered
 	out := make([]WatchedItem, len(h.items))
 	copy(out, h.items)
 	return out
