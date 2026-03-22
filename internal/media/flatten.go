@@ -10,6 +10,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+const flattenStabilityInterval = 3 * time.Second
+
 // dirProfile snapshots the contents of a directory for stability checking.
 type dirProfile struct {
 	entries map[string]fileInfo
@@ -114,8 +116,8 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 		pending[dir] = snapshotDir(dir)
 	}
 
-	// stabilityCheck fires every 5 seconds to re-evaluate pending directories.
-	ticker := time.NewTicker(5 * time.Second)
+	// stabilityCheck fires every flattenStabilityInterval to re-evaluate pending directories.
+	ticker := time.NewTicker(flattenStabilityInterval)
 
 	go func() {
 		defer watcher.Close()
