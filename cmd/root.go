@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -147,6 +148,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 		OnRefresh: func() {
 			if ssdpSrv != nil {
 				ssdpSrv.SendAlive()
+			}
+		},
+		OnRestartService: func() {
+			if err := exec.Command("systemctl", "--user", "restart", "streambox").Run(); err != nil {
+				log.Printf("restart service error: %v", err)
+			}
+		},
+		OnRegenUUID: func() {
+			home, _ := os.UserHomeDir()
+			_ = os.Remove(filepath.Join(home, ".config", "streambox", "uuid"))
+			if err := exec.Command("systemctl", "--user", "restart", "streambox").Run(); err != nil {
+				log.Printf("regen UUID restart error: %v", err)
 			}
 		},
 	})

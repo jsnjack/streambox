@@ -22,15 +22,17 @@ const (
 
 // Config holds the server configuration.
 type Config struct {
-	Port         int
-	Name         string
-	UUID         string
-	IP           string
-	Debug        bool
-	Library      *media.Library
-	History      *media.WatchHistory
-	OnFileDelete func()
-	OnRefresh    func() // called on manual refresh; should send SSDP alive burst
+	Port               int
+	Name               string
+	UUID               string
+	IP                 string
+	Debug              bool
+	Library            *media.Library
+	History            *media.WatchHistory
+	OnFileDelete       func()
+	OnRefresh          func() // called on manual refresh; should send SSDP alive burst
+	OnRestartService   func() // called to restart the systemd user service
+	OnRegenUUID        func() // called to regenerate UUID and restart the service
 }
 
 // Server is the HTTP server for all UPnP/DLNA and file-serving endpoints.
@@ -69,6 +71,8 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("/ui/watch", s.serveWatch)
 	s.mux.HandleFunc("/ui/delete", s.deleteFile)
 	s.mux.HandleFunc("/ui/refresh", s.refreshLibrary)
+	s.mux.HandleFunc("/ui/restart", s.restartService)
+	s.mux.HandleFunc("/ui/regen-uuid", s.regenUUID)
 	return s
 }
 
@@ -450,6 +454,22 @@ func (s *Server) refreshLibrary(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui", http.StatusSeeOther)
 }
 
+func (s *Server) restartService(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.OnRestartService != nil {
+		go s.cfg.OnRestartService()
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, uiRestartingPage)
+}
+
+func (s *Server) regenUUID(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.OnRegenUUID != nil {
+		go s.cfg.OnRegenUUID()
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, uiRestartingPage)
+}
+
 func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
@@ -492,11 +512,16 @@ const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>StreamBox</title>
 <style>
   body{font-family:sans-serif;max-width:700px;margin:2em auto;padding:0 1em;background:#111;color:#eee}
-  .topbar{display:flex;align-items:stretch;gap:.6em;margin-bottom:1.5em}
-  input#q{flex:1;min-width:0;padding:.6em .8em;background:#222;border:1px solid #444;border-radius:4px;color:#eee;font-size:1em}
+  .topbar{display:flex;align-items:stretch;gap:.6em;margin-bottom:1.5em;flex-wrap:wrap}
+  input#q{flex:1;min-width:120px;padding:.6em .8em;background:#222;border:1px solid #444;border-radius:4px;color:#eee;font-size:1em}
   input#q:focus{outline:none;border-color:#666}
-  a.refresh{padding:.6em .9em;background:#222;border:1px solid #444;border-radius:4px;color:#aaa;font-size:.9em;text-decoration:none;white-space:nowrap;display:flex;align-items:center}
-  a.refresh:hover{color:#fff;border-color:#888}
+  .btn{padding:.6em .9em;border-radius:4px;font-size:.85em;text-decoration:none;white-space:nowrap;display:flex;align-items:center;cursor:pointer;border:1px solid}
+  .btn-refresh{background:#1a1a1a;border-color:#444;color:#aaa}
+  .btn-refresh:hover{color:#fff;border-color:#888}
+  .btn-restart{background:#1c1400;border-color:#6b4f00;color:#c8920a}
+  .btn-restart:hover{color:#ffc12b;border-color:#c8920a}
+  .btn-regen{background:#1c0000;border-color:#6b0000;color:#c84040}
+  .btn-regen:hover{color:#ff7070;border-color:#c84040}
   h2{font-size:1.1em;margin:1.5em 0 .5em;color:#aaa;text-transform:uppercase;letter-spacing:.05em}
   ul{list-style:none;padding:0;margin:0}
   li{display:flex;align-items:center;justify-content:space-between;padding:.6em 0;border-bottom:1px solid #222}
@@ -509,7 +534,9 @@ const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
 </style></head><body>
 <div class="topbar">
 <input id="q" type="search" placeholder="Filter…" autocomplete="off" oninput="filter(this.value)">
-<a class="refresh" href="/ui/refresh">Refresh TV</a>
+<a class="btn btn-refresh" href="/ui/refresh">Refresh Library</a>
+<a class="btn btn-restart" href="/ui/restart">Restart Service</a>
+<a class="btn btn-regen" href="/ui/regen-uuid">Regenerate UUID</a>
 </div>
 <script>
 function filter(q){
@@ -551,6 +578,28 @@ document.querySelector('video').addEventListener('loadedmetadata',function(){
 </body></html>`
 
 // ----- Helpers -----
+
+const uiRestartingPage = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Restarting…</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:sans-serif;background:#111;color:#eee;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:1em}
+  .spinner{font-size:2.5em;animation:spin 1.2s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .msg{color:#aaa;font-size:1em}
+</style></head><body>
+<div class="spinner">↻</div>
+<div class="msg">Restarting service, please wait…</div>
+<script>
+function tryRedirect(){
+  fetch('/ui',{method:'GET',cache:'no-store'})
+    .then(function(r){if(r.ok){window.location='/ui';}else{setTimeout(tryRedirect,2000);}})
+    .catch(function(){setTimeout(tryRedirect,2000);});
+}
+setTimeout(tryRedirect,3000);
+</script>
+</body></html>`
 
 func soapAction(r *http.Request) string {
 	h := strings.Trim(r.Header.Get("SOAPACTION"), `"`)
