@@ -67,3 +67,31 @@ func (h *WatchHistory) Remove(id string) {
 	}
 	h.items = filtered
 }
+
+// Get returns the WatchedItem with the given ID without filtering deleted files.
+func (h *WatchHistory) Get(id string) (WatchedItem, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, w := range h.items {
+		if w.ID == id {
+			return w, true
+		}
+	}
+	return WatchedItem{}, false
+}
+
+// Readd inserts a previously-removed WatchedItem back at the front of history.
+func (h *WatchHistory) Readd(w WatchedItem) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	filtered := h.items[:0]
+	for _, item := range h.items {
+		if item.ID != w.ID {
+			filtered = append(filtered, item)
+		}
+	}
+	h.items = append([]WatchedItem{w}, filtered...)
+	if len(h.items) > maxHistory {
+		h.items = h.items[:maxHistory]
+	}
+}
