@@ -646,10 +646,10 @@ const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <div id="toast"><span id="toast-msg"></span><a class="undo" id="toast-undo" href="#">Undo</a><a class="close-t" id="toast-close" href="#">&#x2715;</a></div>
 <div class="topbar">
 <input id="q" type="search" placeholder="Filter&#x2026; (press / to focus)" autocomplete="off" oninput="filter(this.value)">
-<a class="btn btn-refresh" href="/ui/refresh">Refresh</a>
 <button class="btn btn-advanced" id="adv-btn" onclick="toggleAdvanced()" type="button">&#x2699; Advanced &#x25be;</button>
 </div>
 <div class="advanced-panel" id="adv-panel">
+<a class="btn btn-refresh" href="/ui/refresh">Rescan Library</a>
 <a class="btn btn-restart" href="/ui/restart">Restart Service</a>
 <a class="btn btn-regen" href="/ui/regen-uuid">Regenerate UUID</a>
 </div>
