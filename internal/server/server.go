@@ -70,6 +70,7 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("/ui", s.serveUI)
 	s.mux.HandleFunc("/ui/watch", s.serveWatch)
 	s.mux.HandleFunc("/ui/delete", s.deleteFile)
+	s.mux.HandleFunc("/ui/discard", s.discardFile)
 	s.mux.HandleFunc("/ui/refresh", s.refreshLibrary)
 	s.mux.HandleFunc("/ui/restart", s.restartService)
 	s.mux.HandleFunc("/ui/regen-uuid", s.regenUUID)
@@ -404,14 +405,14 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, uiHeader)
 
-	s.renderSection(w, "Recently Watched", watched2items(watched), true)
-	s.renderSection(w, "Recent", recent, false)
-	s.renderSection(w, "All", all, false)
+	s.renderSection(w, "Recently Watched", watched2items(watched), true, true)
+	s.renderSection(w, "Recent", recent, false, false)
+	s.renderSection(w, "All", all, false, false)
 
 	fmt.Fprint(w, `</body></html>`)
 }
 
-func (s *Server) renderSection(w http.ResponseWriter, title string, items []*media.Item, showEmpty bool) {
+func (s *Server) renderSection(w http.ResponseWriter, title string, items []*media.Item, showEmpty bool, showDiscard bool) {
 	if len(items) == 0 {
 		if showEmpty {
 			fmt.Fprintf(w, `<div class="section"><h2>%s</h2><p class="empty">Nothing yet.</p></div>`, title)
@@ -420,10 +421,14 @@ func (s *Server) renderSection(w http.ResponseWriter, title string, items []*med
 	}
 	fmt.Fprintf(w, `<div class="section"><h2>%s</h2><ul>`, title)
 	for _, item := range items {
+		discard := ""
+		if showDiscard {
+			discard = fmt.Sprintf(`<a class="discard" href="/ui/discard?id=%s">Discard</a>`, item.ID)
+		}
 		fmt.Fprintf(w,
 			`<li><a class="title" href="/ui/watch?id=%s">%s</a>`+
-				`<a class="del" href="/ui/delete?id=%s" onclick="return confirm('Delete %s?')">Delete</a></li>`,
-			item.ID, escXML(item.Title), item.ID, escXML(item.Title))
+				`%s<a class="del" href="/ui/delete?id=%s" onclick="return confirm('Delete %s?')">Delete</a></li>`,
+			item.ID, escXML(item.Title), discard, item.ID, escXML(item.Title))
 	}
 	fmt.Fprint(w, `</ul></div>`)
 }
@@ -499,6 +504,18 @@ func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui", http.StatusSeeOther)
 }
 
+func (s *Server) discardFile(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	if s.cfg.History != nil {
+		s.cfg.History.Remove(id)
+	}
+	http.Redirect(w, r, "/ui", http.StatusSeeOther)
+}
+
 func watched2items(ws []media.WatchedItem) []*media.Item {
 	items := make([]*media.Item, len(ws))
 	for i, w := range ws {
@@ -529,6 +546,8 @@ const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
   a.title:hover{color:#fff;text-decoration:underline}
   a.del{color:#e55;text-decoration:none;font-size:.85em;white-space:nowrap}
   a.del:hover{color:#f88}
+  a.discard{color:#888;text-decoration:none;font-size:.85em;white-space:nowrap;margin-right:.6em}
+  a.discard:hover{color:#bbb}
   p.empty{color:#555;font-size:.9em}
   .section{display:block}
 </style></head><body>
