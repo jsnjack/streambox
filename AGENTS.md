@@ -28,6 +28,10 @@ internal/
   config/
     config.go                 TOML schema, defaults, loader. DefaultConfig is
                               the template written by `config init`.
+  loglevel/
+    loglevel.go               Exports the custom slog `LevelTrace` constant so
+                              any subsystem can log at trace level without
+                              importing cmd.
   media/
     library.go                Recursive scan, in-memory object index, title
                               cleaner, fsnotify-based change watcher.

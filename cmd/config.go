@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -28,7 +29,10 @@ func init() {
 }
 
 func runConfigInit(cmd *cobra.Command, args []string) error {
-	force, _ := cmd.Flags().GetBool("force")
+	force, ferr := cmd.Flags().GetBool("force")
+	if ferr != nil {
+		slog.Log(cmd.Context(), LevelTrace, "get flag force", "err", ferr)
+	}
 
 	cfgRoot, err := os.UserConfigDir()
 	if err != nil {

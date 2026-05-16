@@ -24,6 +24,14 @@ The Makefile stamps it via `-ldflags="-X <pkg>.Version=$(VERSION)"` using
 return fmt.Errorf("load config: %w", err)
 ```
 
+**Never ignore errors:** No `_ = fn()` or bare discards. If an error genuinely
+can't be acted on, log it at trace level so `--trace` surfaces it:
+```go
+if err := f.Close(); err != nil {
+    slog.Log(ctx, LevelTrace, "close file", "err", err)
+}
+```
+
 **Logging:** Use `log/slog` with `slog.NewTextHandler`. Wire it from the
 `--debug` / `--trace` flags as described in `AGENTS.universal.md`. Do not use
 stdlib `log`.

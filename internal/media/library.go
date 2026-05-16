@@ -16,6 +16,8 @@ import (
 	"unicode"
 
 	"github.com/fsnotify/fsnotify"
+
+	"streambox/internal/loglevel"
 )
 
 var videoExts = map[string]string{
@@ -175,7 +177,9 @@ func NewLibrary(root string, recentDays int) (*Library, error) {
 // pathID returns a stable string ID derived from a filesystem path.
 func pathID(path string) string {
 	h := fnv.New64a()
-	_, _ = h.Write([]byte(path))
+	if _, err := h.Write([]byte(path)); err != nil {
+		slog.Log(context.Background(), loglevel.LevelTrace, "pathID: hash write", "err", err)
+	}
 	return strconv.FormatUint(h.Sum64(), 10)
 }
 
@@ -335,12 +339,18 @@ func Watch(ctx context.Context, root string, onChange func()) error {
 		}
 		return watcher.Add(path)
 	}); err != nil {
-		_ = watcher.Close()
+		if cerr := watcher.Close(); cerr != nil {
+			slog.Log(ctx, loglevel.LevelTrace, "media watcher: close", "err", cerr)
+		}
 		return fmt.Errorf("media watcher: walk %q: %w", root, err)
 	}
 
 	go func() {
-		defer func() { _ = watcher.Close() }()
+		defer func() {
+			if cerr := watcher.Close(); cerr != nil {
+				slog.Log(ctx, loglevel.LevelTrace, "media watcher: close", "err", cerr)
+			}
+		}()
 		timer := time.NewTimer(0)
 		timer.Stop()
 		for {

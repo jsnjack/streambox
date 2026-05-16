@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"log/slog"
@@ -13,8 +14,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"streambox/internal/loglevel"
 	"streambox/internal/media"
 )
+
+// logFprintErr records a Fprint/Fprintf write error to the HTTP response
+// writer at trace level. The client may have disconnected — there is nothing
+// the handler can do, but --trace surfaces it for diagnostics.
+func logFprintErr(ctx context.Context, op string, err error) {
+	if err != nil {
+		slog.Log(ctx, loglevel.LevelTrace, op, "err", err)
+	}
+}
 
 const (
 	contentDirNS = "urn:schemas-upnp-org:service:ContentDirectory:1"
@@ -101,17 +112,20 @@ func (s *Server) ListenAndServe() error {
 
 func (s *Server) deviceDesc(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	_, _ = fmt.Fprintf(w, deviceDescXML, s.cfg.Name, s.cfg.UUID)
+	_, err := fmt.Fprintf(w, deviceDescXML, s.cfg.Name, s.cfg.UUID)
+	logFprintErr(r.Context(), "write device.xml", err)
 }
 
 func (s *Server) contentDirSCPD(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	_, _ = fmt.Fprint(w, contentDirSCPDXML)
+	_, err := fmt.Fprint(w, contentDirSCPDXML)
+	logFprintErr(r.Context(), "write contentdirectory.xml", err)
 }
 
 func (s *Server) connMgrSCPD(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	_, _ = fmt.Fprint(w, connMgrSCPDXML)
+	_, err := fmt.Fprint(w, connMgrSCPDXML)
+	logFprintErr(r.Context(), "write connectionmanager.xml", err)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +252,9 @@ func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 			slog.Any("err", err))
 		return
 	}
-	_ = resp.Body.Close()
+	if cerr := resp.Body.Close(); cerr != nil {
+		slog.Log(context.Background(), loglevel.LevelTrace, "event: close notify body", "err", cerr)
+	}
 	slog.Debug("event: NOTIFY sent",
 		slog.String("callback", s.callback),
 		slog.String("status", resp.Status))
@@ -394,7 +410,11 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			slog.Log(r.Context(), loglevel.LevelTrace, "serveFile: close file", "path", item.Path, "err", cerr)
+		}
+	}()
 	info, err := f.Stat()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -417,31 +437,37 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 	all := s.cfg.Library.AllItems()
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprint(w, uiHeader)
+	ctx := r.Context()
+	_, err := fmt.Fprint(w, uiHeader)
+	logFprintErr(ctx, "ui: write header", err)
 
-	s.renderSection(w, "Recently Watched", watched2items(watched), true, true)
-	s.renderSection(w, "Recent", recent, false, false)
-	s.renderSection(w, "All", all, false, false)
+	s.renderSection(ctx, w, "Recently Watched", watched2items(watched), true, true)
+	s.renderSection(ctx, w, "Recent", recent, false, false)
+	s.renderSection(ctx, w, "All", all, false, false)
 
 	collapseAll := (len(watched) > 0 || len(recent) > 0) && len(all) > 0
-	_, _ = fmt.Fprintf(w, uiInitScript, collapseAll,
+	_, err = fmt.Fprintf(w, uiInitScript, collapseAll,
 		r.URL.Query().Get("discarded"), r.URL.Query().Get("dtitle"))
-	_, _ = fmt.Fprint(w, `</body></html>`)
+	logFprintErr(ctx, "ui: write init script", err)
+	_, err = fmt.Fprint(w, `</body></html>`)
+	logFprintErr(ctx, "ui: write footer", err)
 }
 
-func (s *Server) renderSection(w http.ResponseWriter, title string, items []*media.Item, showEmpty bool, showDiscard bool) {
+func (s *Server) renderSection(ctx context.Context, w http.ResponseWriter, title string, items []*media.Item, showEmpty bool, showDiscard bool) {
 	slug := strings.ToLower(strings.ReplaceAll(title, " ", "-"))
 	if len(items) == 0 {
 		if showEmpty {
-			_, _ = fmt.Fprintf(w,
+			_, err := fmt.Fprintf(w,
 				`<div class="section" data-section="%s"><h2 onclick="toggleSection(this)">%s <span class="badge">0</span><span class="caret">▾</span></h2><p class="empty">Nothing yet.</p></div>`,
 				slug, title)
+			logFprintErr(ctx, "ui: write empty section", err)
 		}
 		return
 	}
-	_, _ = fmt.Fprintf(w,
+	_, err := fmt.Fprintf(w,
 		`<div class="section" data-section="%s"><h2 onclick="toggleSection(this)">%s <span class="badge">%d</span><span class="caret">▾</span></h2><ul>`,
 		slug, title, len(items))
+	logFprintErr(ctx, "ui: write section header", err)
 	for _, item := range items {
 		size := ""
 		if item.Size > 0 {
@@ -451,12 +477,14 @@ func (s *Server) renderSection(w http.ResponseWriter, title string, items []*med
 		if showDiscard {
 			discard = fmt.Sprintf(`<a class="discard" href="/ui/discard?id=%s">Discard</a>`, item.ID)
 		}
-		_, _ = fmt.Fprintf(w,
+		_, err := fmt.Fprintf(w,
 			`<li><div class="item-info"><a class="title" href="/ui/watch?id=%s">%s</a>%s</div>`+
 				`<div class="actions">%s<a class="del" href="/ui/delete?id=%s" data-title="%s" onclick="return inlineDel(event,this)">Delete</a></div></li>`,
 			item.ID, escXML(item.Title), size, discard, item.ID, escXML(item.Title))
+		logFprintErr(ctx, "ui: write section item", err)
 	}
-	_, _ = fmt.Fprint(w, `</ul></div>`)
+	_, err = fmt.Fprint(w, `</ul></div>`)
+	logFprintErr(ctx, "ui: write section footer", err)
 }
 
 func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request) {
@@ -472,7 +500,8 @@ func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprintf(w, uiWatchPage, escXML(item.Title), item.ID, item.MIMEType, escXML(item.Title))
+	_, err := fmt.Fprintf(w, uiWatchPage, escXML(item.Title), item.ID, item.MIMEType, escXML(item.Title))
+	logFprintErr(r.Context(), "ui: write watch page", err)
 }
 
 func (s *Server) refreshLibrary(w http.ResponseWriter, r *http.Request) {
@@ -490,7 +519,8 @@ func (s *Server) restartService(w http.ResponseWriter, r *http.Request) {
 		go s.cfg.OnRestartService()
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprint(w, uiRestartingPage)
+	_, err := fmt.Fprint(w, uiRestartingPage)
+	logFprintErr(r.Context(), "ui: write restarting page", err)
 }
 
 func (s *Server) regenUUID(w http.ResponseWriter, r *http.Request) {
@@ -498,7 +528,8 @@ func (s *Server) regenUUID(w http.ResponseWriter, r *http.Request) {
 		go s.cfg.OnRegenUUID()
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprint(w, uiRestartingPage)
+	_, err := fmt.Fprint(w, uiRestartingPage)
+	logFprintErr(r.Context(), "ui: write regen-uuid page", err)
 }
 
 func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
@@ -804,19 +835,20 @@ func soapAction(r *http.Request) string {
 func soapResp(w http.ResponseWriter, action, ns, body string) {
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
 	w.Header().Set("EXT", "")
-	_, _ = fmt.Fprintf(w,
+	_, err := fmt.Fprintf(w,
 		`<?xml version="1.0" encoding="utf-8"?>`+
 			`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">`+
 			`<s:Body><u:%sResponse xmlns:u="%s">%s</u:%sResponse></s:Body>`+
 			`</s:Envelope>`,
 		action, ns, body, action,
 	)
+	logFprintErr(context.Background(), "soap: write response", err)
 }
 
 func soapFault(w http.ResponseWriter, code int, desc string) {
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
 	w.WriteHeader(http.StatusInternalServerError)
-	_, _ = fmt.Fprintf(w,
+	_, err := fmt.Fprintf(w,
 		`<?xml version="1.0"?>`+
 			`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">`+
 			`<s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring>`+
@@ -825,11 +857,14 @@ func soapFault(w http.ResponseWriter, code int, desc string) {
 			`</UPnPError></detail></s:Fault></s:Body></s:Envelope>`,
 		code, desc,
 	)
+	logFprintErr(context.Background(), "soap: write fault", err)
 }
 
 func escXML(s string) string {
 	var b strings.Builder
-	_ = xml.EscapeText(&b, []byte(s))
+	if err := xml.EscapeText(&b, []byte(s)); err != nil {
+		slog.Log(context.Background(), loglevel.LevelTrace, "escXML: escape text", "err", err)
+	}
 	return b.String()
 }
 

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"streambox/internal/loglevel"
 )
 
 const flattenStabilityInterval = 3 * time.Second
@@ -25,7 +27,7 @@ type fileInfo struct {
 
 func snapshotDir(dir string) dirProfile {
 	p := dirProfile{entries: make(map[string]fileInfo)}
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	if err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -35,7 +37,9 @@ func snapshotDir(dir string) dirProfile {
 		}
 		p.entries[path] = fileInfo{size: info.Size(), modTime: info.ModTime()}
 		return nil
-	})
+	}); err != nil {
+		slog.Log(context.Background(), loglevel.LevelTrace, "snapshotDir: walk", "dir", dir, "err", err)
+	}
 	return p
 }
 
@@ -56,7 +60,7 @@ func (a dirProfile) equal(b dirProfile) bool {
 // removes dir. Files that would overwrite an existing file are skipped.
 func flattenDir(dir, root string) {
 	var moved int
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	if werr := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -79,7 +83,9 @@ func flattenDir(dir, root string) {
 			slog.String("src", path),
 			slog.String("dst", dst))
 		return nil
-	})
+	}); werr != nil {
+		slog.Log(context.Background(), loglevel.LevelTrace, "flattenDir: walk", "dir", dir, "err", werr)
+	}
 	if moved > 0 {
 		if err := os.RemoveAll(dir); err != nil {
 			slog.Warn("flatten: remove dir failed",
@@ -94,7 +100,7 @@ func flattenDir(dir, root string) {
 // hasVideoFiles reports whether dir contains at least one video file.
 func hasVideoFiles(dir string) bool {
 	found := false
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	if err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -103,7 +109,9 @@ func hasVideoFiles(dir string) bool {
 			return filepath.SkipAll
 		}
 		return nil
-	})
+	}); err != nil {
+		slog.Log(context.Background(), loglevel.LevelTrace, "hasVideoFiles: walk", "dir", dir, "err", err)
+	}
 	return found
 }
 
@@ -117,7 +125,9 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 		return err
 	}
 	if err := watcher.Add(root); err != nil {
-		_ = watcher.Close()
+		if cerr := watcher.Close(); cerr != nil {
+			slog.Log(ctx, loglevel.LevelTrace, "flatten: close watcher", "err", cerr)
+		}
 		return fmt.Errorf("flatten: watch root %q: %w", root, err)
 	}
 
@@ -127,7 +137,9 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 	// Seed pending with any subdirectories that already exist at startup.
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		_ = watcher.Close()
+		if cerr := watcher.Close(); cerr != nil {
+			slog.Log(ctx, loglevel.LevelTrace, "flatten: close watcher", "err", cerr)
+		}
 		return fmt.Errorf("flatten: read root %q: %w", root, err)
 	}
 	for _, e := range entries {
@@ -143,7 +155,11 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 	ticker := time.NewTicker(flattenStabilityInterval)
 
 	go func() {
-		defer func() { _ = watcher.Close() }()
+		defer func() {
+			if cerr := watcher.Close(); cerr != nil {
+				slog.Log(ctx, loglevel.LevelTrace, "flatten: close watcher", "err", cerr)
+			}
+		}()
 		defer ticker.Stop()
 		for {
 			select {

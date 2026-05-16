@@ -81,7 +81,10 @@ func setupLogger(debugEnabled bool) func() {
 func runServe(cmd *cobra.Command, args []string) error {
 	cfg := config.Defaults()
 
-	cfgFile, _ := cmd.Flags().GetString("config")
+	cfgFile, err := cmd.Flags().GetString("config")
+	if err != nil {
+		slog.Log(cmd.Context(), LevelTrace, "get flag config", "err", err)
+	}
 	if cfgFile == "" {
 		if cfgDir, err := os.UserConfigDir(); err == nil {
 			def := filepath.Join(cfgDir, "streambox", "config.toml")
@@ -99,13 +102,25 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	if cmd.Flags().Changed("media") {
-		cfg.MediaDir, _ = cmd.Flags().GetString("media")
+		v, ferr := cmd.Flags().GetString("media")
+		if ferr != nil {
+			slog.Log(cmd.Context(), LevelTrace, "get flag media", "err", ferr)
+		}
+		cfg.MediaDir = v
 	}
 	if cmd.Flags().Changed("port") {
-		cfg.Port, _ = cmd.Flags().GetInt("port")
+		v, ferr := cmd.Flags().GetInt("port")
+		if ferr != nil {
+			slog.Log(cmd.Context(), LevelTrace, "get flag port", "err", ferr)
+		}
+		cfg.Port = v
 	}
 	if cmd.Flags().Changed("name") {
-		cfg.Name, _ = cmd.Flags().GetString("name")
+		v, ferr := cmd.Flags().GetString("name")
+		if ferr != nil {
+			slog.Log(cmd.Context(), LevelTrace, "get flag name", "err", ferr)
+		}
+		cfg.Name = v
 	}
 	cfg.MediaDir = expandHome(cfg.MediaDir)
 
@@ -121,7 +136,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		slog.String("dir", cfg.MediaDir),
 		slog.Int("recent_days", cfg.RecentDays))
 
-	ifaceName, _ := cmd.Flags().GetString("iface")
+	ifaceName, ferr := cmd.Flags().GetString("iface")
+	if ferr != nil {
+		slog.Log(cmd.Context(), LevelTrace, "get flag iface", "err", ferr)
+	}
 	ip, err := detectIP(ifaceName)
 	if err != nil {
 		return fmt.Errorf("detecting local IP: %w", err)
@@ -178,7 +196,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		},
 		OnRegenUUID: func() {
 			if path, err := uuidPath(); err == nil {
-				_ = os.Remove(path)
+				if rerr := os.Remove(path); rerr != nil {
+					slog.Log(context.Background(), LevelTrace, "regen uuid: remove file", "path", path, "err", rerr)
+				}
 			}
 			if err := exec.Command("systemctl", "--user", "restart", "streambox").Run(); err != nil {
 				slog.Warn("regen uuid restart failed", slog.Any("err", err))
@@ -268,7 +288,11 @@ func detectIP(ifaceName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("dial outbound for ip detection: %w", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		if cerr := conn.Close(); cerr != nil {
+			slog.Log(context.Background(), LevelTrace, "ip detect: close conn", "err", cerr)
+		}
+	}()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String(), nil
 }
 
@@ -340,7 +364,10 @@ func loadUpdateID() int64 {
 	if err != nil {
 		return 0
 	}
-	id, _ := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	id, perr := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if perr != nil {
+		slog.Log(context.Background(), LevelTrace, "loadUpdateID: parse int", "err", perr)
+	}
 	return id
 }
 
@@ -360,11 +387,17 @@ func saveUpdateID(id int64) error {
 
 func expandHome(p string) string {
 	if p == "~" || p == "~/" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			slog.Log(context.Background(), LevelTrace, "expandHome: user home dir", "err", err)
+		}
 		return home
 	}
 	if len(p) >= 2 && p[:2] == "~/" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			slog.Log(context.Background(), LevelTrace, "expandHome: user home dir", "err", err)
+		}
 		return filepath.Join(home, p[2:])
 	}
 	return p

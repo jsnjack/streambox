@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/net/ipv4"
+
+	"streambox/internal/loglevel"
 )
 
 const (
@@ -62,14 +64,20 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen udp4 :%d: %w", ssdpPort, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		if cerr := conn.Close(); cerr != nil {
+			slog.Log(ctx, loglevel.LevelTrace, "ssdp: close conn", "err", cerr)
+		}
+	}()
 	slog.Debug("ssdp: listening",
 		slog.Int("port", ssdpPort),
 		slog.String("location", s.location))
 
 	pc := ipv4.NewPacketConn(conn)
 	s.pc = pc
-	_ = pc.SetMulticastTTL(4)
+	if err := pc.SetMulticastTTL(4); err != nil {
+		slog.Log(ctx, loglevel.LevelTrace, "ssdp: set multicast ttl", "err", err)
+	}
 
 	group := &net.UDPAddr{IP: net.ParseIP(ssdpIP)}
 	joined := 0
@@ -115,7 +123,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	buf := make([]byte, 2048)
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			slog.Log(ctx, loglevel.LevelTrace, "ssdp: set read deadline", "err", err)
+		}
 		n, src, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -189,7 +199,9 @@ func (s *Server) notify(conn *net.UDPConn, alive bool) {
 	dst := &net.UDPAddr{IP: net.ParseIP(ssdpIP), Port: ssdpPort}
 	for _, iface := range s.activeIfaces() {
 		if s.pc != nil {
-			_ = s.pc.SetMulticastInterface(iface)
+			if err := s.pc.SetMulticastInterface(iface); err != nil {
+				slog.Log(context.Background(), loglevel.LevelTrace, "ssdp: set multicast interface", "iface", iface.Name, "err", err)
+			}
 		}
 		s.notifyTo(conn, dst, alive)
 	}
@@ -237,7 +249,10 @@ func (s *Server) activeIfaces() []*net.Interface {
 	if s.iface != nil {
 		return []*net.Interface{s.iface}
 	}
-	ifaces, _ := net.Interfaces()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		slog.Log(context.Background(), loglevel.LevelTrace, "ssdp: list interfaces", "err", err)
+	}
 	var result []*net.Interface
 	for i := range ifaces {
 		iface := &ifaces[i]
@@ -247,7 +262,10 @@ func (s *Server) activeIfaces() []*net.Interface {
 		if isVirtual(iface.Name) {
 			continue
 		}
-		addrs, _ := iface.Addrs()
+		addrs, aerr := iface.Addrs()
+		if aerr != nil {
+			slog.Log(context.Background(), loglevel.LevelTrace, "ssdp: iface addrs", "iface", iface.Name, "err", aerr)
+		}
 		for _, addr := range addrs {
 			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
 				result = append(result, iface)

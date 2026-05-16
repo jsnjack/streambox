@@ -1,13 +1,17 @@
 package cmd
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
+
+	"streambox/internal/loglevel"
 )
 
-// LevelTrace is the slog level used for --trace output (max detail).
-const LevelTrace = slog.Level(-8)
+// LevelTrace is re-exported here for backward compatibility within the cmd
+// package. New callers should reference loglevel.LevelTrace directly.
+const LevelTrace = loglevel.LevelTrace
 
 // L is the package-wide structured logger configured by initLogger.
 var L *slog.Logger
@@ -26,7 +30,11 @@ func initLogger(tracePath, level string) func() {
 		f, err := os.OpenFile(tracePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 		if err == nil {
 			w = f
-			cleanup = func() { _ = f.Close() }
+			cleanup = func() {
+				if cerr := f.Close(); cerr != nil {
+					slog.Log(context.Background(), LevelTrace, "trace file close", "err", cerr)
+				}
+			}
 		}
 	}
 	lvl := slog.LevelWarn
