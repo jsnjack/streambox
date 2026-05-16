@@ -95,8 +95,9 @@ func (s *Server) SetUpdateID(id int64) {
 // It returns the new value so the caller can persist it.
 //
 // A bump also marks the auto-regen as pending. The background ticker
-// (regenCheckLoop) handles actual firing — there's at most a regenCheckInterval
-// delay before a fresh bump that's outside the cooldown window leads to a regen.
+// (regenCheckLoop, period regenCheckInterval) fires the regen when the
+// cooldown has elapsed. So the worst-case delay between a bump and the
+// regen firing is: (remaining cooldown, if any) + regenCheckInterval.
 func (s *Server) BumpUpdateID() int64 {
 	id := s.updateID.Add(1)
 	s.markRegenPending()
@@ -277,15 +278,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		// The SUBSCRIBE proves a client is alive and acknowledges the current
 		// UUID. Use this as the moment to broadcast byebye for any previously-
 		// used UUIDs — this evicts stale entries on clients (notably LG TVs)
-		// that ignore SSDP max-age.
-		if old := s.drainHistoricUUIDs(); len(old) > 0 && s.cfg.SendByebye != nil {
-			go func(uuids []string) {
-				for _, u := range uuids {
-					s.cfg.SendByebye(u)
-				}
-				slog.Info("ssdp: historic byebye broadcast on subscribe",
-					slog.Int("count", len(uuids)))
-			}(old)
+		// that ignore SSDP max-age. Skip the drain when no callback is wired
+		// so historic UUIDs aren't silently lost.
+		if s.cfg.SendByebye != nil {
+			if old := s.drainHistoricUUIDs(); len(old) > 0 {
+				go func(uuids []string) {
+					for _, u := range uuids {
+						s.cfg.SendByebye(u)
+					}
+					slog.Info("ssdp: historic byebye broadcast on subscribe",
+						slog.Int("count", len(uuids)))
+				}(old)
+			}
 		}
 		// Send initial event with current SystemUpdateID; drop the sub if the
 		// callback isn't reachable.
@@ -310,12 +314,15 @@ var notifyClient = &http.Client{Timeout: 5 * time.Second}
 type subscription struct {
 	callback string
 	expiry   time.Time
+	// seq is the next SEQ value to emit on a NOTIFY for this subscription.
+	// Per UPnP eventing spec, SEQ starts at 0 for each new subscription and
+	// increments per-NOTIFY within that subscription.
+	seq int64
 }
 
 type subscriptions struct {
 	mu   sync.Mutex
 	subs map[string]subscription // sid → subscription
-	seq  atomic.Int64
 }
 
 func (ss *subscriptions) add(callback string) string {
@@ -391,11 +398,14 @@ func (ss *subscriptions) notify(updateID int64) {
 func (ss *subscriptions) notifyOne(sid string, updateID int64) bool {
 	ss.mu.Lock()
 	s, ok := ss.subs[sid]
-	ss.mu.Unlock()
 	if !ok {
+		ss.mu.Unlock()
 		return false
 	}
-	seq := ss.seq.Add(1) - 1
+	seq := s.seq
+	s.seq++
+	ss.subs[sid] = s
+	ss.mu.Unlock()
 	body := fmt.Sprintf(
 		`<?xml version="1.0"?>`+
 			`<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">`+
