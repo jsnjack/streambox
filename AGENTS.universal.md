@@ -16,6 +16,11 @@ change. It must pass before reporting the task as complete.
 - **Present options.** When a task has multiple valid solutions, list all of
   them with a short description and pros/cons for each. Ask the user to choose
   before doing any implementation.
+- **Plan in concepts, not code vocabulary.** When describing a plan, use plain
+  language — not variable names, function names, or pseudocode. Write "if
+  output is suppressed" not "if `isSilent` is true"; write "the retry limit"
+  not "`maxRetries`". Code names are implementation details that belong in the
+  code, not in the reasoning.
 - Never report work as done until all requirements are met and `make check`
   passes. If requirements cannot be met, say so explicitly.
 - When something is unclear, read the existing code first — match its patterns.

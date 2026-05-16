@@ -36,6 +36,11 @@ if err := f.Close(); err != nil {
 `--debug` / `--trace` flags as described in `AGENTS.universal.md`. Do not use
 stdlib `log`.
 
+**Server startup:** When the application starts a server on any port, log the
+listening address unconditionally — to stderr and the trace log — regardless
+of debug flags. Use a consistent format: `Listening on <addr>`. This ensures
+operators and agents always know what address was bound.
+
 **Testing:** Table-driven tests using `t.Run()` — one named sub-test per case.
 Use only the standard `testing` package; no third-party assertion libraries.
 
