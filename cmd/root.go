@@ -167,7 +167,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// regenIdentity swaps the device UUID in-place: byebye-old, generate
 	// new, alive-new. Used by both the UI button (OnRegenUUID) and the
-	// automatic offline-client trigger (OnAutoRegen).
+	// automatic library-change trigger (OnAutoRegen).
 	regenIdentity := func(reason string) {
 		newUUID := newUUID()
 		newLocation := fmt.Sprintf("http://%s:%d/device.xml", ip, cfg.Port)
