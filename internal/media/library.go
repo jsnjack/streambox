@@ -134,19 +134,27 @@ func (i *Item) GetTitle() string    { return i.Title }
 
 // Library holds an in-memory index of all media objects.
 type Library struct {
-	mu         sync.RWMutex
-	objects    map[string]Object
-	containers map[string]*Container
-	videoCount int
+	mu            sync.RWMutex
+	objects       map[string]Object
+	containers    map[string]*Container
+	recentIDs     []string // IDs of all "Recent" virtual containers
+	recentBuckets int      // number of recent buckets (stored for Reload)
+	videoCount    int
 }
 
 // NewLibrary scans root recursively and builds the media index.
 // recentDays controls how many days back the "Recent" virtual folder covers
-// (0 = disable Recent).
-func NewLibrary(root string, recentDays int) (*Library, error) {
+// (0 = disable Recent). recentBuckets controls how many "Recent" folders are
+// created (≥1); multiple buckets let clients force a fresh listing by
+// navigating to an unvisited folder.
+func NewLibrary(root string, recentDays int, recentBuckets int) (*Library, error) {
+	if recentBuckets < 1 {
+		recentBuckets = 1
+	}
 	l := &Library{
-		objects:    make(map[string]Object),
-		containers: make(map[string]*Container),
+		objects:       make(map[string]Object),
+		containers:    make(map[string]*Container),
+		recentBuckets: recentBuckets,
 	}
 
 	rootC := &Container{ID: idRoot, ParentID: "-1", Title: "root"}
@@ -158,10 +166,21 @@ func NewLibrary(root string, recentDays int) (*Library, error) {
 	l.containers[idAll] = allC
 	rootC.children = append(rootC.children, idAll)
 
-	recentC := &Container{ID: idRecent, ParentID: idRoot, Title: "Recent"}
-	l.objects[idRecent] = recentC
-	l.containers[idRecent] = recentC
-	rootC.children = append(rootC.children, idRecent)
+	for i := 0; i < recentBuckets; i++ {
+		id := idRecent
+		if i > 0 {
+			id = fmt.Sprintf("%s-%d", idRecent, i)
+		}
+		title := "Recent"
+		if recentBuckets > 1 {
+			title = fmt.Sprintf("Recent %d", i+1)
+		}
+		c := &Container{ID: id, ParentID: idRoot, Title: title}
+		l.objects[id] = c
+		l.containers[id] = c
+		l.recentIDs = append(l.recentIDs, id)
+		rootC.children = append(rootC.children, id)
+	}
 
 	cutoff := time.Time{}
 	if recentDays > 0 {
@@ -237,7 +256,9 @@ func (l *Library) scan(dir, parentID string, recentCutoff time.Time, flatten boo
 				parent.children = append(parent.children, id)
 			}
 			if !recentCutoff.IsZero() && !info.ModTime().Before(recentCutoff) {
-				l.containers[idRecent].children = append(l.containers[idRecent].children, id)
+				for _, rid := range l.recentIDs {
+					l.containers[rid].children = append(l.containers[rid].children, id)
+				}
 			}
 			l.videoCount++
 			l.mu.Unlock()
@@ -312,13 +333,17 @@ func (l *Library) Children(containerID string) []Object {
 
 // Reload rescans the media directory in-place under the write lock.
 func (l *Library) Reload(root string, recentDays int) error {
-	fresh, err := NewLibrary(root, recentDays)
+	l.mu.RLock()
+	buckets := l.recentBuckets
+	l.mu.RUnlock()
+	fresh, err := NewLibrary(root, recentDays, buckets)
 	if err != nil {
 		return err
 	}
 	l.mu.Lock()
 	l.objects = fresh.objects
 	l.containers = fresh.containers
+	l.recentIDs = fresh.recentIDs
 	l.videoCount = fresh.videoCount
 	l.mu.Unlock()
 	return nil

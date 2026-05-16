@@ -127,7 +127,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	cleanup := setupLogger(flagDebug || cfg.Debug)
 	defer cleanup()
 
-	lib, err := media.NewLibrary(cfg.MediaDir, cfg.RecentDays)
+	lib, err := media.NewLibrary(cfg.MediaDir, cfg.RecentDays, cfg.RecentBuckets)
 	if err != nil {
 		return fmt.Errorf("scanning media directory %q: %w", cfg.MediaDir, err)
 	}
@@ -149,6 +149,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	uuid, err := loadOrCreateUUID()
 	if err != nil {
 		return fmt.Errorf("loading uuid: %w", err)
+	}
+	if gen := loadGeneration(); gen > 1 {
+		cfg.Name = fmt.Sprintf("%s %d", cfg.Name, gen)
 	}
 	updateID := loadUpdateID() + 1 // bump on startup to invalidate stale TV caches
 	if err := saveUpdateID(updateID); err != nil {
@@ -195,6 +198,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}
 		},
 		OnRegenUUID: func() {
+			if err := saveGeneration(loadGeneration() + 1); err != nil {
+				slog.Warn("regen uuid: save generation failed", slog.Any("err", err))
+			}
 			if path, err := uuidPath(); err == nil {
 				if rerr := os.Remove(path); rerr != nil {
 					slog.Log(context.Background(), LevelTrace, "regen uuid: remove file", "path", path, "err", rerr)
@@ -353,6 +359,45 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant RFC 4122
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func generationPath() (string, error) {
+	d, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "generation"), nil
+}
+
+// loadGeneration returns the current name-generation counter (1 = first/default).
+func loadGeneration() int {
+	path, err := generationPath()
+	if err != nil {
+		return 1
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 1
+	}
+	n, perr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if perr != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
+func saveGeneration(n int) error {
+	path, err := generationPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating data dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(strconv.Itoa(n)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("writing generation: %w", err)
+	}
+	return nil
 }
 
 func loadUpdateID() int64 {

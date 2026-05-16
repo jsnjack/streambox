@@ -19,6 +19,11 @@ name = "StreamBox"
 # Set to 0 to disable the Recent folder.
 recent_days = 14
 
+# Number of "Recent" folders exposed via DLNA. LG TVs cache folder listings
+# aggressively; having multiple lets you switch to an unvisited folder to force
+# a fresh fetch and see newly-added files without restarting the server.
+# recent_buckets = 1
+
 # Enable verbose debug logging (HTTP requests, SSDP activity).
 # Equivalent to passing --debug on the command line.
 debug = false
@@ -32,11 +37,12 @@ debug = false
 
 // Config holds all streambox settings.
 type Config struct {
-	MediaDir   string `toml:"media_dir"`
-	Port       int    `toml:"port"`
-	Name       string `toml:"name"`
-	RecentDays int    `toml:"recent_days"`
-	Debug      bool   `toml:"debug"`
+	MediaDir      string `toml:"media_dir"`
+	Port          int    `toml:"port"`
+	Name          string `toml:"name"`
+	RecentDays    int    `toml:"recent_days"`
+	RecentBuckets int    `toml:"recent_buckets"`
+	Debug         bool   `toml:"debug"`
 	// Flatten moves video files from newly-detected subfolders into the root
 	// media_dir and removes the now-empty subfolder. Useful when a downloader
 	// puts each release in its own directory. The folder is only processed once
@@ -47,10 +53,11 @@ type Config struct {
 // Defaults returns a Config populated with sensible defaults.
 func Defaults() Config {
 	return Config{
-		MediaDir:   "~/Videos",
-		Port:       8080,
-		Name:       "StreamBox",
-		RecentDays: 14,
+		MediaDir:      "~/Videos",
+		Port:          8080,
+		Name:          "StreamBox",
+		RecentDays:    14,
+		RecentBuckets: 1,
 	}
 }
 
