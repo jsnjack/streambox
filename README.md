@@ -21,13 +21,17 @@ Available Commands:
 
 Flags:
   -c, --config string   Path to TOML config file
-  -d, --debug           Enable debug logging
+  -d, --debug           DEBUG-level logging on stderr
   -h, --help            help for streambox
   -i, --iface string    Network interface for SSDP (default: auto-detect)
   -m, --media string    Directory to serve video files from
   -n, --name string     Friendly device name shown on the TV (default "StreamBox")
   -p, --port int        HTTP port (default 8080)
+      --trace           TRACE-level logs to /tmp/streambox.log (truncated each run)
 ```
+
+`--debug` and `--trace` can be combined — they control stderr and the trace
+file independently.
 
 Streambox generates clean, human-readable titles from filenames automatically:
 - `The.Dark.Knight.2008.1080p.BluRay.x264.mkv` → **The Dark Knight**
@@ -41,35 +45,38 @@ When you run `streambox` it will:
  - serve virtual folders: **All** (every video, flat list) and one or more **Recent** folders (files modified within the last N days)
  - keep file IDs stable across restarts, so your TV can resume playback of the same file
  - generate clean, human-readable titles from filenames
+ - regenerate its UPnP UUID automatically when files change, so the TV picks up new content without manual intervention
 
 ### LG TV: stale folder content
 
 LG TVs aggressively cache DLNA folder listings and often ignore standard
 UPnP cache-invalidation signals (`SystemUpdateID` changes, SSDP alive
-notifications). This means newly added files may not appear even after the
-library is rescanned.
+notifications). Streambox handles this in two ways:
 
-Two workarounds are built in:
+**1. Auto-regen on library change (built in, automatic)**
 
-**1. Multiple Recent folders (`recent_buckets`)**
+Whenever a file is added or removed, streambox waits a brief cooldown then
+regenerates its UPnP device UUID. It multicasts `ssdp:byebye` for the old
+identity and `ssdp:alive` for the new one. The TV treats this as a brand-new
+device on its next discovery, so it fetches a fresh listing instead of using
+its cache. No restart, no manual action, no daemon required.
 
-Set `recent_buckets = 3` (or any number ≥ 2) in the config. Streambox will
-expose **Recent 1**, **Recent 2**, **Recent 3**, … — each showing the same
-recently-added files. Because the LG TV fetches a folder fresh the first time
-it is opened, you can force a live view of new files by navigating to whichever
-bucket you haven't visited yet. No restart required.
+**2. Multiple Recent folders (`recent_buckets`)**
 
-**2. Regenerate UUID**
+If the TV stays on a folder it has already cached (e.g. it's currently
+displaying `Recent` when content changes), it may not re-fetch even after
+auto-regen. Setting `recent_buckets = 3` in the config exposes **Recent 1**,
+**Recent 2**, **Recent 3**, … — each a distinct container ID showing the
+same recently-added files. Because LG fetches each container fresh on first
+open, you can force a live view by navigating to a bucket you haven't
+visited yet.
 
-Open the streambox web UI (`http://<host>:8080/ui`) and click
-**Regenerate UUID**. This assigns a new device identity, appends an
-incrementing suffix to the friendly name (e.g. `StreamBox 2`), and restarts
-the service. The TV sees a brand-new server and fetches all folders fresh.
-The old cached entry (with the previous name) fades out on its own.
+**3. Manual "Regenerate UUID" button**
 
-> This requires streambox to run as a systemd user service so it can restart
-> itself. The name suffix distinguishes the new entry from the stale one while
-> both are briefly visible on the TV's source list.
+Same effect as auto-regen but on demand. Open the web UI
+(`http://<host>:8080/ui`) and click **Regenerate UUID**. Useful when a TV
+is stuck and you want to force the change immediately rather than waiting
+for the next library event.
 
 ### Configuration
 Create a default config file with:

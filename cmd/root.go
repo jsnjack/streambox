@@ -10,9 +10,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
+	"time"
 
 	"streambox/internal/config"
 	"streambox/internal/media"
@@ -143,18 +142,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("detecting local IP: %w", err)
 	}
 
-	uuid, err := loadOrCreateUUID()
-	if err != nil {
-		return fmt.Errorf("loading uuid: %w", err)
-	}
-	baseName := cfg.Name
-	if gen := loadGeneration(); gen > 1 {
-		cfg.Name = fmt.Sprintf("%s %d", cfg.Name, gen)
-	}
-	updateID := loadUpdateID() + 1 // bump on startup to invalidate stale TV caches
-	if err := saveUpdateID(updateID); err != nil {
-		return fmt.Errorf("saving updateid: %w", err)
-	}
+	// Per CDS:1 spec, SystemUpdateID should be a value that a returning
+	// control point cannot mistake for "nothing changed since I last saw
+	// you." We have no persistent state for it, so seed from the wall clock
+	// (unix seconds): always increases across reboots, looks random to any
+	// client that cached a value from before. Bumps from BumpUpdateID
+	// monotonically increase from there during the run.
+	uuid := newUUID()
+	updateID := time.Now().Unix()
 	location := fmt.Sprintf("http://%s:%d/device.xml", ip, cfg.Port)
 
 	var iface *net.Interface
@@ -169,6 +164,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	var srv *server.Server
 	var ssdpSrv *ssdp.Server
+
+	// regenIdentity swaps the device UUID in-place: byebye-old, generate
+	// new, alive-new. Used by both the UI button (OnRegenUUID) and the
+	// automatic offline-client trigger (OnAutoRegen).
+	regenIdentity := func(reason string) {
+		newUUID := newUUID()
+		newLocation := fmt.Sprintf("http://%s:%d/device.xml", ip, cfg.Port)
+		if ssdpSrv != nil {
+			ssdpSrv.UpdateIdentity(newUUID, newLocation)
+		}
+		srv.UpdateIdentity(newUUID, cfg.Name)
+		slog.Info("uuid regenerated",
+			slog.String("reason", reason),
+			slog.String("uuid", newUUID))
+	}
+
 	srv = server.New(server.Config{
 		Port:    cfg.Port,
 		Name:    cfg.Name,
@@ -190,26 +201,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 				slog.Warn("restart service failed", slog.Any("err", err))
 			}
 		},
-		OnRegenUUID: func() {
-			newUUID := newUUID()
-			gen := loadGeneration() + 1
-			if err := saveGeneration(gen); err != nil {
-				slog.Warn("regen uuid: save generation failed", slog.Any("err", err))
-			}
-			newName := baseName
-			if gen > 1 {
-				newName = fmt.Sprintf("%s %d", baseName, gen)
-			}
-			if err := saveUUID(newUUID); err != nil {
-				slog.Warn("regen uuid: save uuid failed", slog.Any("err", err))
-			}
-			newLocation := fmt.Sprintf("http://%s:%d/device.xml", ip, cfg.Port)
-			if ssdpSrv != nil {
-				ssdpSrv.UpdateIdentity(newUUID, newLocation)
-			}
-			srv.UpdateIdentity(newUUID, newName)
-			slog.Info("uuid regenerated", slog.String("name", newName), slog.String("uuid", newUUID))
-		},
+		OnRegenUUID: func() { regenIdentity("ui") },
+		OnAutoRegen: func() { regenIdentity("auto") },
 	})
 	srv.SetUpdateID(updateID)
 
@@ -225,9 +218,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return
 		}
 		slog.Info("rescan complete", slog.Int("videos", lib.VideoCount()))
-		if err := saveUpdateID(srv.BumpUpdateID()); err != nil {
-			slog.Warn("save updateid failed", slog.Any("err", err))
-		}
+		srv.BumpUpdateID()
 		ssdpSrv.SendAlive()
 	}); err != nil {
 		slog.Warn("media watcher unavailable", slog.Any("err", err))
@@ -241,9 +232,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				return
 			}
 			slog.Info("rescan complete", slog.Int("videos", lib.VideoCount()))
-			if err := saveUpdateID(srv.BumpUpdateID()); err != nil {
-				slog.Warn("save updateid failed", slog.Any("err", err))
-			}
+			srv.BumpUpdateID()
 			ssdpSrv.SendAlive()
 		}); err != nil {
 			slog.Warn("flatten watcher unavailable", slog.Any("err", err))
@@ -304,66 +293,6 @@ func detectIP(ifaceName string) (string, error) {
 	return conn.LocalAddr().(*net.UDPAddr).IP.String(), nil
 }
 
-// dataDir returns the directory for persistent app state, honouring
-// $XDG_DATA_HOME and falling back to ~/.local/share/streambox.
-func dataDir() (string, error) {
-	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
-		return filepath.Join(d, "streambox"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolving home directory: %w", err)
-	}
-	return filepath.Join(home, ".local", "share", "streambox"), nil
-}
-
-func uuidPath() (string, error) {
-	d, err := dataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(d, "uuid"), nil
-}
-
-func updateIDPath() (string, error) {
-	d, err := dataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(d, "updateid"), nil
-}
-
-func loadOrCreateUUID() (string, error) {
-	path, err := uuidPath()
-	if err != nil {
-		return newUUID(), nil
-	}
-	if data, err := os.ReadFile(path); err == nil {
-		if u := strings.TrimSpace(string(data)); u != "" {
-			return u, nil
-		}
-	}
-	u := newUUID()
-	if err := saveUUID(u); err != nil {
-		return "", err
-	}
-	return u, nil
-}
-
-func saveUUID(u string) error {
-	path, err := uuidPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating data dir: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(u+"\n"), 0o644); err != nil {
-		return fmt.Errorf("writing uuid: %w", err)
-	}
-	return nil
-}
-
 func newUUID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -372,75 +301,6 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant RFC 4122
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
-}
-
-func generationPath() (string, error) {
-	d, err := dataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(d, "generation"), nil
-}
-
-// loadGeneration returns the current name-generation counter (1 = first/default).
-func loadGeneration() int {
-	path, err := generationPath()
-	if err != nil {
-		return 1
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 1
-	}
-	n, perr := strconv.Atoi(strings.TrimSpace(string(data)))
-	if perr != nil || n < 1 {
-		return 1
-	}
-	return n
-}
-
-func saveGeneration(n int) error {
-	path, err := generationPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating data dir: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(strconv.Itoa(n)+"\n"), 0o644); err != nil {
-		return fmt.Errorf("writing generation: %w", err)
-	}
-	return nil
-}
-
-func loadUpdateID() int64 {
-	path, err := updateIDPath()
-	if err != nil {
-		return 0
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	id, perr := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-	if perr != nil {
-		slog.Log(context.Background(), LevelTrace, "loadUpdateID: parse int", "err", perr)
-	}
-	return id
-}
-
-func saveUpdateID(id int64) error {
-	path, err := updateIDPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating data dir: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(strconv.FormatInt(id, 10)+"\n"), 0o644); err != nil {
-		return fmt.Errorf("writing updateid: %w", err)
-	}
-	return nil
 }
 
 func expandHome(p string) string {

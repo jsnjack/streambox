@@ -30,6 +30,15 @@ func logFprintErr(ctx context.Context, op string, err error) {
 const (
 	contentDirNS = "urn:schemas-upnp-org:service:ContentDirectory:1"
 	connMgrNS    = "urn:schemas-upnp-org:service:ConnectionManager:1"
+
+	// regenCooldown is the minimum interval between consecutive auto-regens.
+	// Library changes during this window are coalesced into a single pending
+	// regen that fires once cooldown expires.
+	regenCooldown = 30 * time.Second
+
+	// regenCheckInterval is how often the background goroutine retries a
+	// pending regen blocked by cooldown.
+	regenCheckInterval = 5 * time.Second
 )
 
 // Config holds the server configuration.
@@ -42,7 +51,8 @@ type Config struct {
 	History          *media.WatchHistory
 	OnFileDelete     func()
 	OnRestartService func() // called to restart the systemd user service
-	OnRegenUUID      func() // called to regenerate UUID and restart the service
+	OnRegenUUID      func() // user-triggered regen via web UI
+	OnAutoRegen      func() // auto-triggered regen on every library change (rate-limited by cooldown)
 }
 
 // Server is the HTTP server for all UPnP/DLNA and file-serving endpoints.
@@ -54,6 +64,13 @@ type Server struct {
 	undoMu     sync.Mutex
 	undoBuf    map[string]undoEntry
 	identityMu sync.RWMutex
+
+	// Auto-regen state. A library change marks regenPending=true; the next
+	// gate evaluation (BumpUpdateID or the background ticker) fires
+	// OnAutoRegen once cooldown elapses.
+	regenMu      sync.Mutex
+	regenPending bool
+	lastRegen    time.Time
 }
 
 type undoEntry struct {
@@ -68,13 +85,20 @@ func (s *Server) SetUpdateID(id int64) {
 
 // BumpUpdateID increments the SystemUpdateID and notifies all subscribers.
 // It returns the new value so the caller can persist it.
+//
+// A bump also marks the auto-regen as pending. The background ticker
+// (regenCheckLoop) handles actual firing — there's at most a regenCheckInterval
+// delay before a fresh bump that's outside the cooldown window leads to a regen.
 func (s *Server) BumpUpdateID() int64 {
 	id := s.updateID.Add(1)
+	s.markRegenPending()
 	go s.subs.notify(id)
 	return id
 }
 
-// New creates and configures the HTTP server.
+// New creates and configures the HTTP server, registers HTTP handlers, and
+// starts a background goroutine that drives auto-regen evaluation. The
+// goroutine lives for the lifetime of the process.
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
 	s.mux.HandleFunc("/device.xml", s.deviceDesc)
@@ -93,6 +117,7 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("/ui/refresh", s.refreshLibrary)
 	s.mux.HandleFunc("/ui/restart", s.restartService)
 	s.mux.HandleFunc("/ui/regen-uuid", s.regenUUID)
+	go s.regenCheckLoop()
 	return s
 }
 
@@ -120,11 +145,61 @@ func (s *Server) deviceDesc(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateIdentity updates the device's UUID and friendly name in-place.
+// The ssdp.Server's UpdateIdentity handles announcing byebye-old + alive-new
+// over multicast; this just swaps the in-memory identity.
 func (s *Server) UpdateIdentity(uuid, name string) {
 	s.identityMu.Lock()
 	s.cfg.UUID = uuid
 	s.cfg.Name = name
 	s.identityMu.Unlock()
+}
+
+// markRegenPending flags that the library has changed and a regen should
+// fire as soon as the cooldown clears. Idempotent; logs only on first flip.
+func (s *Server) markRegenPending() {
+	s.regenMu.Lock()
+	already := s.regenPending
+	s.regenPending = true
+	s.regenMu.Unlock()
+	if !already {
+		slog.Debug("auto-regen: marked pending")
+	}
+}
+
+// regenCheckLoop runs forever, retrying any pending regen at
+// regenCheckInterval cadence so a cooldown-blocked pending eventually fires.
+func (s *Server) regenCheckLoop() {
+	t := time.NewTicker(regenCheckInterval)
+	defer t.Stop()
+	for range t.C {
+		s.tryFireRegen()
+	}
+}
+
+// tryFireRegen runs the gate: if pending and cooldown has elapsed, fire
+// OnAutoRegen exactly once. Safe to call concurrently.
+func (s *Server) tryFireRegen() {
+	s.regenMu.Lock()
+	if !s.regenPending {
+		s.regenMu.Unlock()
+		return
+	}
+	now := time.Now()
+	if now.Sub(s.lastRegen) < regenCooldown {
+		remaining := regenCooldown - now.Sub(s.lastRegen)
+		s.regenMu.Unlock()
+		slog.Debug("auto-regen: in cooldown",
+			slog.Duration("remaining", remaining))
+		return
+	}
+	s.regenPending = false
+	s.lastRegen = now
+	s.regenMu.Unlock()
+
+	slog.Info("auto-regen triggered")
+	if s.cfg.OnAutoRegen != nil {
+		s.cfg.OnAutoRegen()
+	}
 }
 
 func (s *Server) contentDirSCPD(w http.ResponseWriter, r *http.Request) {

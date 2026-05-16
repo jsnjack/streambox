@@ -31,31 +31,3 @@ func TestExpandHome(t *testing.T) {
 		})
 	}
 }
-
-func TestDataDirRespectsXDG(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", "/tmp/xdg-test")
-	got, err := dataDir()
-	if err != nil {
-		t.Fatalf("dataDir: %v", err)
-	}
-	want := "/tmp/xdg-test/streambox"
-	if got != want {
-		t.Fatalf("dataDir() = %q, want %q", got, want)
-	}
-}
-
-func TestDataDirFallsBackToHome(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", "")
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("UserHomeDir: %v", err)
-	}
-	got, err := dataDir()
-	if err != nil {
-		t.Fatalf("dataDir: %v", err)
-	}
-	want := filepath.Join(home, ".local", "share", "streambox")
-	if got != want {
-		t.Fatalf("dataDir() = %q, want %q", got, want)
-	}
-}

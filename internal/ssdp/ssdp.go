@@ -19,8 +19,13 @@ const (
 	ssdpIP   = "239.255.255.250"
 	ssdpPort = 1900
 
-	ssdpMaxAge      = 1800
-	ssdpAlivePeriod = 30 * time.Second
+	ssdpMaxAge = 1800
+	// ssdpAlivePeriod is short on purpose. When auto-regen happens while the
+	// TV is off, the byebye+alive multicast goes to no one. If the TV wakes
+	// up before we re-announce, it sees a stale SSDP table (old UUID is gone,
+	// new one not yet heard) and won't talk to us until the next alive. A
+	// 10s cadence keeps that recovery window small without much LAN chatter.
+	ssdpAlivePeriod = 10 * time.Second
 )
 
 type entry struct{ nt, usn string }

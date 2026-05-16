@@ -44,7 +44,7 @@ func initLogger(tracePath string, debugStderr bool) func() {
 		}
 	}
 
-	var h slog.Handler = handlers[0]
+	h := handlers[0]
 	if len(handlers) > 1 {
 		h = &fanoutHandler{handlers: handlers}
 	}
