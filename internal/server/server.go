@@ -41,7 +41,6 @@ type Config struct {
 	Library          *media.Library
 	History          *media.WatchHistory
 	OnFileDelete     func()
-	OnRefresh        func() // called on manual refresh; should send SSDP alive burst
 	OnRestartService func() // called to restart the systemd user service
 	OnRegenUUID      func() // called to regenerate UUID and restart the service
 }
@@ -507,9 +506,6 @@ func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) refreshLibrary(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.OnFileDelete != nil {
 		s.cfg.OnFileDelete()
-	}
-	if s.cfg.OnRefresh != nil {
-		s.cfg.OnRefresh()
 	}
 	http.Redirect(w, r, "/ui", http.StatusSeeOther)
 }

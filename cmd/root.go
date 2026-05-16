@@ -187,11 +187,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 				slog.Warn("save updateid failed", slog.Any("err", err))
 			}
 		},
-		OnRefresh: func() {
-			if ssdpSrv != nil {
-				ssdpSrv.SendAlive()
-			}
-		},
 		OnRestartService: func() {
 			if err := exec.Command("systemctl", "--user", "restart", "streambox").Run(); err != nil {
 				slog.Warn("restart service failed", slog.Any("err", err))

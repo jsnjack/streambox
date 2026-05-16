@@ -116,10 +116,13 @@ for state — see Design Decisions below.
 - **All physical IPv4 interfaces for SSDP.** Virtual interfaces (docker,
   veth, virbr, tun/tap) are filtered — they cause spurious NOTIFY traffic and
   occasional TV duplicate-device bugs.
-- **byebye+alive cache-bust, rate-limited.** Some TVs (notably LG) cache
-  directory listings aggressively. On M-SEARCH we optionally send byebye then
-  alive to force a refetch, but no more than once per 5 minutes to avoid
-  disrupting active playback.
+- **LG TV cache workaround.** LG TVs cache directory listings aggressively and
+  ignore standard UPnP invalidation signals. Two effective mitigations are
+  exposed: (1) `recent_buckets` creates multiple "Recent N" virtual folders —
+  navigating to an unvisited bucket forces a fresh DLNA fetch without restart;
+  (2) "Regenerate UUID" from the web UI assigns a new device identity and
+  appends an incrementing generation suffix to the friendly name so the new
+  server is visually distinguishable while the old cached entry fades out.
 - **Logging via `slog`.** `--debug` writes structured logs to stderr at
   debug level. `--trace` writes the same at trace level (-8) to
   `/tmp/streambox.log`, truncated on each start. Both are persistent root
