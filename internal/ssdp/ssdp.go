@@ -18,6 +18,9 @@ import (
 const (
 	ssdpIP   = "239.255.255.250"
 	ssdpPort = 1900
+
+	ssdpMaxAge      = 1800
+	ssdpAlivePeriod = 30 * time.Second
 )
 
 type entry struct{ nt, usn string }
@@ -108,7 +111,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(ssdpAlivePeriod)
 		defer ticker.Stop()
 		for {
 			select {
@@ -165,14 +168,14 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 		}
 		resp := fmt.Sprintf(
 			"HTTP/1.1 200 OK\r\n"+
-				"CACHE-CONTROL: max-age=1800\r\n"+
+				"CACHE-CONTROL: max-age=%d\r\n"+
 				"EXT:\r\n"+
 				"LOCATION: %s\r\n"+
 				"SERVER: Linux/1.0 UPnP/1.0 StreamBox/1.0\r\n"+
 				"ST: %s\r\n"+
 				"USN: %s\r\n"+
 				"\r\n",
-			location, e.nt, e.usn,
+			ssdpMaxAge, location, e.nt, e.usn,
 		)
 		if _, err := conn.WriteToUDP([]byte(resp), src); err != nil {
 			slog.Warn("ssdp: response failed",
@@ -212,14 +215,14 @@ func (s *Server) notifyTo(conn *net.UDPConn, dst *net.UDPAddr, alive bool, uuid,
 			msg = fmt.Sprintf(
 				"NOTIFY * HTTP/1.1\r\n"+
 					"HOST: %s:%d\r\n"+
-					"CACHE-CONTROL: max-age=1800\r\n"+
+					"CACHE-CONTROL: max-age=%d\r\n"+
 					"LOCATION: %s\r\n"+
 					"NT: %s\r\n"+
 					"NTS: ssdp:alive\r\n"+
 					"SERVER: Linux/1.0 UPnP/1.0 StreamBox/1.0\r\n"+
 					"USN: %s\r\n"+
 					"\r\n",
-				ssdpIP, ssdpPort, location, e.nt, e.usn,
+				ssdpIP, ssdpPort, ssdpMaxAge, location, e.nt, e.usn,
 			)
 		} else {
 			msg = fmt.Sprintf(

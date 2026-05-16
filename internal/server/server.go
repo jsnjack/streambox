@@ -144,17 +144,28 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	case "SUBSCRIBE":
 		callback := strings.Trim(r.Header.Get("CALLBACK"), "<>")
 		if callback == "" {
-			// Renewal — refresh timeout.
-			s.subs.renew(r.Header.Get("SID"))
-			w.Header().Set("SID", r.Header.Get("SID"))
+			// Renewal — refresh timeout. Per UPnP spec, an unknown SID must
+			// return 412 so the control point re-SUBSCRIBEs (and receives a
+			// fresh initial event with current state).
+			sid := r.Header.Get("SID")
+			if !s.subs.renew(sid) {
+				w.WriteHeader(http.StatusPreconditionFailed)
+				return
+			}
+			w.Header().Set("SID", sid)
 			w.Header().Set("TIMEOUT", fmt.Sprintf("Second-%d", int(subTimeout.Seconds())))
 			return
 		}
 		sid := s.subs.add(callback)
 		w.Header().Set("SID", sid)
 		w.Header().Set("TIMEOUT", fmt.Sprintf("Second-%d", int(subTimeout.Seconds())))
-		// Send initial event with current SystemUpdateID.
-		go s.subs.notifyOne(sid, s.updateID.Load())
+		// Send initial event with current SystemUpdateID; drop the sub if the
+		// callback isn't reachable.
+		go func() {
+			if !s.subs.notifyOne(sid, s.updateID.Load()) {
+				s.subs.remove(sid)
+			}
+		}()
 	case "UNSUBSCRIBE":
 		s.subs.remove(r.Header.Get("SID"))
 		w.WriteHeader(http.StatusOK)
@@ -197,13 +208,19 @@ func (ss *subscriptions) add(callback string) string {
 	return sid
 }
 
-func (ss *subscriptions) renew(sid string) {
+// renew extends the timeout on an existing subscription. Returns false if the
+// SID is unknown (expired or evicted) so the caller can reply 412 and force a
+// fresh SUBSCRIBE from the control point.
+func (ss *subscriptions) renew(sid string) bool {
 	ss.mu.Lock()
-	if s, ok := ss.subs[sid]; ok {
-		s.expiry = time.Now().Add(subTimeout)
-		ss.subs[sid] = s
+	defer ss.mu.Unlock()
+	s, ok := ss.subs[sid]
+	if !ok {
+		return false
 	}
-	ss.mu.Unlock()
+	s.expiry = time.Now().Add(subTimeout)
+	ss.subs[sid] = s
+	return true
 }
 
 func (ss *subscriptions) remove(sid string) {
@@ -224,17 +241,31 @@ func (ss *subscriptions) notify(updateID int64) {
 		}
 	}
 	ss.mu.Unlock()
+	var failed []string
 	for sid := range active {
-		ss.notifyOne(sid, updateID)
+		if !ss.notifyOne(sid, updateID) {
+			failed = append(failed, sid)
+		}
+	}
+	if len(failed) > 0 {
+		ss.mu.Lock()
+		for _, sid := range failed {
+			delete(ss.subs, sid)
+		}
+		ss.mu.Unlock()
 	}
 }
 
-func (ss *subscriptions) notifyOne(sid string, updateID int64) {
+// notifyOne sends a SystemUpdateID event to a single subscriber. Returns
+// false if the callback is unreachable so the caller can evict the dead sub;
+// the next time the control point talks to us, renew will 412 and force a
+// clean re-SUBSCRIBE.
+func (ss *subscriptions) notifyOne(sid string, updateID int64) bool {
 	ss.mu.Lock()
 	s, ok := ss.subs[sid]
 	ss.mu.Unlock()
 	if !ok {
-		return
+		return false
 	}
 	seq := ss.seq.Add(1) - 1
 	body := fmt.Sprintf(
@@ -249,7 +280,7 @@ func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 		slog.Warn("event: bad callback URL",
 			slog.String("callback", s.callback),
 			slog.Any("err", err))
-		return
+		return false
 	}
 	req.Header.Set("Content-Type", "text/xml")
 	req.Header.Set("NT", "upnp:event")
@@ -258,10 +289,10 @@ func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 	req.Header.Set("SEQ", fmt.Sprintf("%d", seq))
 	resp, err := notifyClient.Do(req)
 	if err != nil {
-		slog.Warn("event: NOTIFY failed",
+		slog.Warn("event: NOTIFY failed, evicting subscription",
 			slog.String("callback", s.callback),
 			slog.Any("err", err))
-		return
+		return false
 	}
 	if cerr := resp.Body.Close(); cerr != nil {
 		slog.Log(context.Background(), loglevel.LevelTrace, "event: close notify body", "err", cerr)
@@ -269,6 +300,7 @@ func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 	slog.Debug("event: NOTIFY sent",
 		slog.String("callback", s.callback),
 		slog.String("status", resp.Status))
+	return true
 }
 
 // ----- ContentDirectory:1 SOAP control -----

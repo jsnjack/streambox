@@ -66,16 +66,14 @@ func init() {
 // setupLogger configures slog from the persistent --debug / --trace flags,
 // plus the resolved config.debug field. Returns a cleanup func to defer.
 //
-// Precedence (highest first): --trace, --debug, cfg.debug, default.
+// --debug and --trace are independent: stderr level reflects --debug (or
+// cfg.debug), and --trace additionally writes a TRACE-level sink to disk.
 func setupLogger(debugEnabled bool) func() {
-	level, path := "", ""
-	switch {
-	case flagTrace:
-		level, path = "trace", tracePath
-	case debugEnabled:
-		level = "debug"
+	path := ""
+	if flagTrace {
+		path = tracePath
 	}
-	return initLogger(path, level)
+	return initLogger(path, debugEnabled)
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
@@ -144,7 +142,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("detecting local IP: %w", err)
 	}
-	slog.Info("advertising", slog.String("url", fmt.Sprintf("http://%s:%d", ip, cfg.Port)))
 
 	uuid, err := loadOrCreateUUID()
 	if err != nil {
@@ -180,12 +177,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Library: lib,
 		History: history,
 		OnFileDelete: func() {
+			// Reload so the web UI immediately reflects the deletion.
+			// Do NOT bump SystemUpdateID here — the fsnotify watcher will
+			// fire within ~2s and emit a single coalesced bump+NOTIFY for
+			// TV subscribers. Bumping here too would double every event.
 			if err := lib.Reload(cfg.MediaDir, cfg.RecentDays); err != nil {
 				slog.Warn("rescan failed", slog.Any("err", err))
-				return
-			}
-			if err := saveUpdateID(srv.BumpUpdateID()); err != nil {
-				slog.Warn("save updateid failed", slog.Any("err", err))
 			}
 		},
 		OnRestartService: func() {
@@ -261,7 +258,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("listening", slog.Int("port", cfg.Port))
+		slog.Info("streambox ready",
+			slog.String("url", fmt.Sprintf("http://%s:%d", ip, cfg.Port)),
+			slog.String("name", cfg.Name))
 		errCh <- srv.ListenAndServe()
 	}()
 
