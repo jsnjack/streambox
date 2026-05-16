@@ -3,6 +3,8 @@ streambox
 
 `streambox` is a minimal DLNA media server that makes your video files visible
 to TVs, tablets and other UPnP/DLNA clients on your local network.
+It is developed and tested primarily against **LG TVs**, but follows the
+standard DLNA/UPnP spec and should work well on any compatible client.
 
 ### Description
 ```
@@ -36,9 +38,38 @@ Streambox generates clean, human-readable titles from filenames automatically:
 When you run `streambox` it will:
  - scan the media directory recursively for video files
  - advertise itself on the local network via SSDP/UPnP so DLNA clients discover it automatically
- - serve two virtual folders: **All** (every video, flat list) and **Recent** (files modified within the last N days)
+ - serve virtual folders: **All** (every video, flat list) and one or more **Recent** folders (files modified within the last N days)
  - keep file IDs stable across restarts, so your TV can resume playback of the same file
  - generate clean, human-readable titles from filenames
+
+### LG TV: stale folder content
+
+LG TVs aggressively cache DLNA folder listings and often ignore standard
+UPnP cache-invalidation signals (`SystemUpdateID` changes, SSDP alive
+notifications). This means newly added files may not appear even after the
+library is rescanned.
+
+Two workarounds are built in:
+
+**1. Multiple Recent folders (`recent_buckets`)**
+
+Set `recent_buckets = 3` (or any number ≥ 2) in the config. Streambox will
+expose **Recent 1**, **Recent 2**, **Recent 3**, … — each showing the same
+recently-added files. Because the LG TV fetches a folder fresh the first time
+it is opened, you can force a live view of new files by navigating to whichever
+bucket you haven't visited yet. No restart required.
+
+**2. Regenerate UUID**
+
+Open the streambox web UI (`http://<host>:8080/ui`) and click
+**Regenerate UUID**. This assigns a new device identity, appends an
+incrementing suffix to the friendly name (e.g. `StreamBox 2`), and restarts
+the service. The TV sees a brand-new server and fetches all folders fresh.
+The old cached entry (with the previous name) fades out on its own.
+
+> This requires streambox to run as a systemd user service so it can restart
+> itself. The name suffix distinguishes the new entry from the stale one while
+> both are briefly visible on the TV's source list.
 
 ### Configuration
 Create a default config file with:
@@ -62,8 +93,9 @@ name = "StreamBox"
 # Set to 0 to disable the Recent folder.
 recent_days = 14
 
-# Write log output to this file in addition to stderr.
-log_file = "/tmp/streambox.log"
+# Number of "Recent" folders exposed via DLNA.
+# Set to 2 or more to work around LG TV folder caching (see above).
+recent_buckets = 1
 
 # Enable verbose debug logging (HTTP requests, SSDP activity).
 debug = false
