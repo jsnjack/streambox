@@ -54,6 +54,21 @@ func (s *Server) SendAlive() {
 	}
 }
 
+// SendByebyeFor multicasts ssdp:byebye for an arbitrary UUID, independent of
+// the server's current identity. Used to evict cached entries for previously-
+// used UUIDs from clients whose SSDP caches outlive max-age.
+func (s *Server) SendByebyeFor(uuid string) {
+	s.mu.RLock()
+	conn := s.conn
+	location := s.location
+	s.mu.RUnlock()
+	if conn == nil {
+		return
+	}
+	s.notifyAs(conn, false, uuid, location)
+	slog.Debug("ssdp: byebye sent for old uuid", slog.String("uuid", uuid))
+}
+
 func buildEntries(uuid string) []entry {
 	u := uuid
 	return []entry{
@@ -105,15 +120,8 @@ func (s *Server) Start(ctx context.Context) error {
 		slog.Warn("ssdp: failed to join multicast group on any interface — discovery will not work")
 	}
 
-	// Send 3 initial NOTIFYs spaced 200ms apart (standard DLNA practice).
-	go func() {
-		for i := 0; i < 3; i++ {
-			s.notify(conn, true)
-			if i < 2 {
-				time.Sleep(200 * time.Millisecond)
-			}
-		}
-	}()
+	// Initial alive.
+	go s.notify(conn, true)
 
 	go func() {
 		ticker := time.NewTicker(ssdpAlivePeriod)

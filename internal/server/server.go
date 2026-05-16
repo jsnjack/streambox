@@ -50,9 +50,10 @@ type Config struct {
 	Library          *media.Library
 	History          *media.WatchHistory
 	OnFileDelete     func()
-	OnRestartService func() // called to restart the systemd user service
-	OnRegenUUID      func() // user-triggered regen via web UI
-	OnAutoRegen      func() // auto-triggered regen on every library change (rate-limited by cooldown)
+	OnRestartService func()            // called to restart the systemd user service
+	OnRegenUUID      func()            // user-triggered regen via web UI
+	OnAutoRegen      func()            // auto-triggered regen on every library change (rate-limited by cooldown)
+	SendByebye       func(uuid string) // multicast ssdp:byebye for an arbitrary UUID
 }
 
 // Server is the HTTP server for all UPnP/DLNA and file-serving endpoints.
@@ -71,6 +72,13 @@ type Server struct {
 	regenMu      sync.Mutex
 	regenPending bool
 	lastRegen    time.Time
+
+	// historicUUIDs holds UUIDs we've used during this run and not yet
+	// drained by a subsequent SUBSCRIBE. On every fresh SUBSCRIBE we
+	// broadcast byebye for each and clear the set — that's our chance to
+	// evict stale entries from clients that ignore SSDP max-age.
+	historicMu    sync.Mutex
+	historicUUIDs map[string]struct{}
 }
 
 type undoEntry struct {
@@ -100,7 +108,11 @@ func (s *Server) BumpUpdateID() int64 {
 // starts a background goroutine that drives auto-regen evaluation. The
 // goroutine lives for the lifetime of the process.
 func New(cfg Config) *Server {
-	s := &Server{cfg: cfg, mux: http.NewServeMux()}
+	s := &Server{
+		cfg:           cfg,
+		mux:           http.NewServeMux(),
+		historicUUIDs: make(map[string]struct{}),
+	}
 	s.mux.HandleFunc("/device.xml", s.deviceDesc)
 	s.mux.HandleFunc("/contentdirectory.xml", s.contentDirSCPD)
 	s.mux.HandleFunc("/connectionmanager.xml", s.connMgrSCPD)
@@ -146,12 +158,40 @@ func (s *Server) deviceDesc(w http.ResponseWriter, r *http.Request) {
 
 // UpdateIdentity updates the device's UUID and friendly name in-place.
 // The ssdp.Server's UpdateIdentity handles announcing byebye-old + alive-new
-// over multicast; this just swaps the in-memory identity.
+// over multicast; this swaps the in-memory identity and records the outgoing
+// UUID so a later SUBSCRIBE can re-broadcast byebye for it (handles clients
+// whose SSDP cache ignores max-age and missed the original byebye).
 func (s *Server) UpdateIdentity(uuid, name string) {
 	s.identityMu.Lock()
+	oldUUID := s.cfg.UUID
 	s.cfg.UUID = uuid
 	s.cfg.Name = name
 	s.identityMu.Unlock()
+
+	if oldUUID != "" && oldUUID != uuid {
+		s.historicMu.Lock()
+		s.historicUUIDs[oldUUID] = struct{}{}
+		count := len(s.historicUUIDs)
+		s.historicMu.Unlock()
+		slog.Debug("identity: recorded historic uuid",
+			slog.String("uuid", oldUUID),
+			slog.Int("total", count))
+	}
+}
+
+// drainHistoricUUIDs returns the set of historic UUIDs and empties it.
+func (s *Server) drainHistoricUUIDs() []string {
+	s.historicMu.Lock()
+	defer s.historicMu.Unlock()
+	if len(s.historicUUIDs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.historicUUIDs))
+	for u := range s.historicUUIDs {
+		out = append(out, u)
+	}
+	s.historicUUIDs = make(map[string]struct{})
+	return out
 }
 
 // markRegenPending flags that the library has changed and a regen should
@@ -234,6 +274,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		sid := s.subs.add(callback)
 		w.Header().Set("SID", sid)
 		w.Header().Set("TIMEOUT", fmt.Sprintf("Second-%d", int(subTimeout.Seconds())))
+		// The SUBSCRIBE proves a client is alive and acknowledges the current
+		// UUID. Use this as the moment to broadcast byebye for any previously-
+		// used UUIDs — this evicts stale entries on clients (notably LG TVs)
+		// that ignore SSDP max-age.
+		if old := s.drainHistoricUUIDs(); len(old) > 0 && s.cfg.SendByebye != nil {
+			go func(uuids []string) {
+				for _, u := range uuids {
+					s.cfg.SendByebye(u)
+				}
+				slog.Info("ssdp: historic byebye broadcast on subscribe",
+					slog.Int("count", len(uuids)))
+			}(old)
+		}
 		// Send initial event with current SystemUpdateID; drop the sub if the
 		// callback isn't reachable.
 		go func() {

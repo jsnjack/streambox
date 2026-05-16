@@ -203,6 +203,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 		},
 		OnRegenUUID: func() { regenIdentity("ui") },
 		OnAutoRegen: func() { regenIdentity("auto") },
+		SendByebye: func(u string) {
+			if ssdpSrv != nil {
+				ssdpSrv.SendByebyeFor(u)
+			}
+		},
 	})
 	srv.SetUpdateID(updateID)
 
