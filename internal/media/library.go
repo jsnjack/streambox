@@ -2,8 +2,9 @@ package media
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -334,12 +335,12 @@ func Watch(ctx context.Context, root string, onChange func()) error {
 		}
 		return watcher.Add(path)
 	}); err != nil {
-		watcher.Close()
-		return err
+		_ = watcher.Close()
+		return fmt.Errorf("media watcher: walk %q: %w", root, err)
 	}
 
 	go func() {
-		defer watcher.Close()
+		defer func() { _ = watcher.Close() }()
 		timer := time.NewTimer(0)
 		timer.Stop()
 		for {
@@ -355,7 +356,9 @@ func Watch(ctx context.Context, root string, onChange func()) error {
 					if event.Has(fsnotify.Create) {
 						if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 							if err := watcher.Add(event.Name); err != nil {
-								log.Printf("media watcher: add dir %s: %v", event.Name, err)
+								slog.Warn("media watcher: add dir",
+									slog.String("path", event.Name),
+									slog.Any("err", err))
 							}
 						}
 					}
@@ -367,7 +370,7 @@ func Watch(ctx context.Context, root string, onChange func()) error {
 				if !ok {
 					return
 				}
-				log.Printf("media watcher: %v", err)
+				slog.Warn("media watcher error", slog.Any("err", err))
 			}
 		}
 	}()

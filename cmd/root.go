@@ -4,8 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -23,8 +22,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is set at build time via -ldflags.
+// Version is set at build time via ldflags.
 var Version = "dev"
+
+// tracePath is where the --trace flag writes (truncated on every start).
+const tracePath = "/tmp/streambox.log"
+
+var (
+	flagDebug bool
+	flagTrace bool
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "streambox",
@@ -34,29 +41,50 @@ var rootCmd = &cobra.Command{
 
 // Execute runs the CLI.
 func Execute() {
+	rootCmd.Version = Version
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
 func init() {
+	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false,
+		"Debug-level logging on stderr.")
+	rootCmd.PersistentFlags().BoolVar(&flagTrace, "trace", false,
+		"Trace-level logs to "+tracePath+" (truncated each run).")
+
+	// Pre-register --version (no short alias) so cobra's default doesn't add -v.
+	rootCmd.Flags().Bool("version", false, "Print the version and exit.")
+
 	rootCmd.Flags().StringP("config", "c", "", "Path to TOML config file")
 	rootCmd.Flags().StringP("media", "m", "", "Directory to serve video files from")
 	rootCmd.Flags().IntP("port", "p", 0, "HTTP port (default 8080)")
 	rootCmd.Flags().StringP("name", "n", "", "Friendly device name shown on the TV (default \"StreamBox\")")
 	rootCmd.Flags().StringP("iface", "i", "", "Network interface for SSDP (default: auto-detect)")
-	rootCmd.Flags().BoolP("debug", "d", false, "Enable debug logging")
+}
+
+// setupLogger configures slog from the persistent --debug / --trace flags,
+// plus the resolved config.debug field. Returns a cleanup func to defer.
+//
+// Precedence (highest first): --trace, --debug, cfg.debug, default.
+func setupLogger(debugEnabled bool) func() {
+	level, path := "", ""
+	switch {
+	case flagTrace:
+		level, path = "trace", tracePath
+	case debugEnabled:
+		level = "debug"
+	}
+	return initLogger(path, level)
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	// Load config: start from defaults, then overlay TOML file, then CLI flags.
 	cfg := config.Defaults()
 
 	cfgFile, _ := cmd.Flags().GetString("config")
 	if cfgFile == "" {
-		// Auto-detect default config location.
-		if home, err := os.UserHomeDir(); err == nil {
-			def := filepath.Join(home, ".config", "streambox", "config.toml")
+		if cfgDir, err := os.UserConfigDir(); err == nil {
+			def := filepath.Join(cfgDir, "streambox", "config.toml")
 			if _, err := os.Stat(def); err == nil {
 				cfgFile = def
 			}
@@ -65,12 +93,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if cfgFile != "" {
 		loaded, err := config.Load(cfgFile)
 		if err != nil {
-			return fmt.Errorf("loading config file: %w", err)
+			return fmt.Errorf("loading config file %q: %w", cfgFile, err)
 		}
 		cfg = loaded
 	}
 
-	// CLI flags override config file (only when explicitly provided).
 	if cmd.Flags().Changed("media") {
 		cfg.MediaDir, _ = cmd.Flags().GetString("media")
 	}
@@ -80,42 +107,35 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("name") {
 		cfg.Name, _ = cmd.Flags().GetString("name")
 	}
-	if cmd.Flags().Changed("debug") {
-		cfg.Debug, _ = cmd.Flags().GetBool("debug")
-	}
 	cfg.MediaDir = expandHome(cfg.MediaDir)
 
-	// Configure logging.
-	if cfg.Debug {
-		log.SetFlags(log.LstdFlags | log.Lshortfile)
-		if cfg.LogFile != "" {
-			f, err := os.OpenFile(cfg.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err != nil {
-				return fmt.Errorf("opening log file %q: %w", cfg.LogFile, err)
-			}
-			defer f.Close()
-			log.SetOutput(io.MultiWriter(os.Stderr, f))
-		}
-		log.Println("debug mode enabled")
-	}
+	cleanup := setupLogger(flagDebug || cfg.Debug)
+	defer cleanup()
 
 	lib, err := media.NewLibrary(cfg.MediaDir, cfg.RecentDays)
 	if err != nil {
-		return fmt.Errorf("scanning media directory: %w", err)
+		return fmt.Errorf("scanning media directory %q: %w", cfg.MediaDir, err)
 	}
-	log.Printf("Found %d video files in %s (recent cutoff: %d days)",
-		lib.VideoCount(), cfg.MediaDir, cfg.RecentDays)
+	slog.Info("library scanned",
+		slog.Int("videos", lib.VideoCount()),
+		slog.String("dir", cfg.MediaDir),
+		slog.Int("recent_days", cfg.RecentDays))
 
 	ifaceName, _ := cmd.Flags().GetString("iface")
 	ip, err := detectIP(ifaceName)
 	if err != nil {
 		return fmt.Errorf("detecting local IP: %w", err)
 	}
-	log.Printf("Advertising as http://%s:%d", ip, cfg.Port)
+	slog.Info("advertising", slog.String("url", fmt.Sprintf("http://%s:%d", ip, cfg.Port)))
 
-	uuid := loadOrCreateUUID()
-	updateID := loadUpdateID() + 1 // always bump on startup to invalidate stale caches
-	saveUpdateID(updateID)
+	uuid, err := loadOrCreateUUID()
+	if err != nil {
+		return fmt.Errorf("loading uuid: %w", err)
+	}
+	updateID := loadUpdateID() + 1 // bump on startup to invalidate stale TV caches
+	if err := saveUpdateID(updateID); err != nil {
+		return fmt.Errorf("saving updateid: %w", err)
+	}
 	location := fmt.Sprintf("http://%s:%d/device.xml", ip, cfg.Port)
 
 	var iface *net.Interface
@@ -135,15 +155,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Name:    cfg.Name,
 		UUID:    uuid,
 		IP:      ip,
-		Debug:   cfg.Debug,
 		Library: lib,
 		History: history,
 		OnFileDelete: func() {
 			if err := lib.Reload(cfg.MediaDir, cfg.RecentDays); err != nil {
-				log.Printf("Rescan error: %v", err)
+				slog.Warn("rescan failed", slog.Any("err", err))
 				return
 			}
-			saveUpdateID(srv.BumpUpdateID())
+			if err := saveUpdateID(srv.BumpUpdateID()); err != nil {
+				slog.Warn("save updateid failed", slog.Any("err", err))
+			}
 		},
 		OnRefresh: func() {
 			if ssdpSrv != nil {
@@ -152,61 +173,66 @@ func runServe(cmd *cobra.Command, args []string) error {
 		},
 		OnRestartService: func() {
 			if err := exec.Command("systemctl", "--user", "restart", "streambox").Run(); err != nil {
-				log.Printf("restart service error: %v", err)
+				slog.Warn("restart service failed", slog.Any("err", err))
 			}
 		},
 		OnRegenUUID: func() {
-			home, _ := os.UserHomeDir()
-			_ = os.Remove(filepath.Join(home, ".config", "streambox", "uuid"))
+			if path, err := uuidPath(); err == nil {
+				_ = os.Remove(path)
+			}
 			if err := exec.Command("systemctl", "--user", "restart", "streambox").Run(); err != nil {
-				log.Printf("regen UUID restart error: %v", err)
+				slog.Warn("regen uuid restart failed", slog.Any("err", err))
 			}
 		},
 	})
 	srv.SetUpdateID(updateID)
 
-	ssdpSrv = ssdp.New(uuid, location, iface, cfg.Debug)
+	ssdpSrv = ssdp.New(uuid, location, iface)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	if err := media.Watch(ctx, cfg.MediaDir, func() {
-		log.Printf("Media directory changed, rescanning %s", cfg.MediaDir)
+		slog.Info("media changed, rescanning", slog.String("dir", cfg.MediaDir))
 		if err := lib.Reload(cfg.MediaDir, cfg.RecentDays); err != nil {
-			log.Printf("Rescan error: %v", err)
+			slog.Warn("rescan failed", slog.Any("err", err))
 			return
 		}
-		log.Printf("Rescan complete: %d video files", lib.VideoCount())
-		saveUpdateID(srv.BumpUpdateID())
+		slog.Info("rescan complete", slog.Int("videos", lib.VideoCount()))
+		if err := saveUpdateID(srv.BumpUpdateID()); err != nil {
+			slog.Warn("save updateid failed", slog.Any("err", err))
+		}
 		ssdpSrv.SendAlive()
 	}); err != nil {
-		log.Printf("Media watcher unavailable: %v", err)
+		slog.Warn("media watcher unavailable", slog.Any("err", err))
 	}
 
 	if cfg.Flatten {
 		if err := media.WatchAndFlatten(ctx, cfg.MediaDir, func() {
-			log.Printf("Flatten complete, rescanning %s", cfg.MediaDir)
+			slog.Info("flatten complete, rescanning", slog.String("dir", cfg.MediaDir))
 			if err := lib.Reload(cfg.MediaDir, cfg.RecentDays); err != nil {
-				log.Printf("Rescan error: %v", err)
+				slog.Warn("rescan failed", slog.Any("err", err))
 				return
 			}
-			log.Printf("Rescan complete: %d video files", lib.VideoCount())
-			saveUpdateID(srv.BumpUpdateID())
+			slog.Info("rescan complete", slog.Int("videos", lib.VideoCount()))
+			if err := saveUpdateID(srv.BumpUpdateID()); err != nil {
+				slog.Warn("save updateid failed", slog.Any("err", err))
+			}
 			ssdpSrv.SendAlive()
 		}); err != nil {
-			log.Printf("Flatten watcher unavailable: %v", err)
+			slog.Warn("flatten watcher unavailable", slog.Any("err", err))
 		}
 	}
 
 	go func() {
 		if err := ssdpSrv.Start(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("SSDP error: %v", err)
+			slog.Error("ssdp stopped", slog.Any("err", err))
 		}
 	}()
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("Serving on :%d", cfg.Port)
+		slog.Info("listening", slog.Int("port", cfg.Port))
 		errCh <- srv.ListenAndServe()
 	}()
 
@@ -216,7 +242,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	case err := <-errCh:
 		return err
 	case <-sig:
-		log.Println("Shutting down")
+		slog.Info("shutting down")
 		return nil
 	}
 }
@@ -225,11 +251,11 @@ func detectIP(ifaceName string) (string, error) {
 	if ifaceName != "" {
 		iface, err := net.InterfaceByName(ifaceName)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("interface %q: %w", ifaceName, err)
 		}
 		addrs, err := iface.Addrs()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("interface %q addrs: %w", ifaceName, err)
 		}
 		for _, addr := range addrs {
 			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil && !ipnet.IP.IsLoopback() {
@@ -240,27 +266,59 @@ func detectIP(ifaceName string) (string, error) {
 	}
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("dial outbound for ip detection: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String(), nil
 }
 
-func loadOrCreateUUID() string {
+// dataDir returns the directory for persistent app state, honouring
+// $XDG_DATA_HOME and falling back to ~/.local/share/streambox.
+func dataDir() (string, error) {
+	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+		return filepath.Join(d, "streambox"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return newUUID()
+		return "", fmt.Errorf("resolving home directory: %w", err)
 	}
-	path := filepath.Join(home, ".config", "streambox", "uuid")
+	return filepath.Join(home, ".local", "share", "streambox"), nil
+}
+
+func uuidPath() (string, error) {
+	d, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "uuid"), nil
+}
+
+func updateIDPath() (string, error) {
+	d, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "updateid"), nil
+}
+
+func loadOrCreateUUID() (string, error) {
+	path, err := uuidPath()
+	if err != nil {
+		return newUUID(), nil
+	}
 	if data, err := os.ReadFile(path); err == nil {
 		if u := strings.TrimSpace(string(data)); u != "" {
-			return u
+			return u, nil
 		}
 	}
 	u := newUUID()
-	_ = os.MkdirAll(filepath.Dir(path), 0755)
-	_ = os.WriteFile(path, []byte(u+"\n"), 0644)
-	return u
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("creating data dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(u+"\n"), 0o644); err != nil {
+		return "", fmt.Errorf("writing uuid: %w", err)
+	}
+	return u, nil
 }
 
 func newUUID() string {
@@ -273,13 +331,12 @@ func newUUID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
-func updateIDPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "streambox", "updateid")
-}
-
 func loadUpdateID() int64 {
-	data, err := os.ReadFile(updateIDPath())
+	path, err := updateIDPath()
+	if err != nil {
+		return 0
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0
 	}
@@ -287,8 +344,18 @@ func loadUpdateID() int64 {
 	return id
 }
 
-func saveUpdateID(id int64) {
-	_ = os.WriteFile(updateIDPath(), []byte(strconv.FormatInt(id, 10)+"\n"), 0644)
+func saveUpdateID(id int64) error {
+	path, err := updateIDPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating data dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(strconv.FormatInt(id, 10)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("writing updateid: %w", err)
+	}
+	return nil
 }
 
 func expandHome(p string) string {

@@ -4,7 +4,7 @@ package server
 import (
 	"encoding/xml"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,17 +23,16 @@ const (
 
 // Config holds the server configuration.
 type Config struct {
-	Port               int
-	Name               string
-	UUID               string
-	IP                 string
-	Debug              bool
-	Library            *media.Library
-	History            *media.WatchHistory
-	OnFileDelete       func()
-	OnRefresh          func() // called on manual refresh; should send SSDP alive burst
-	OnRestartService   func() // called to restart the systemd user service
-	OnRegenUUID        func() // called to regenerate UUID and restart the service
+	Port             int
+	Name             string
+	UUID             string
+	IP               string
+	Library          *media.Library
+	History          *media.WatchHistory
+	OnFileDelete     func()
+	OnRefresh        func() // called on manual refresh; should send SSDP alive burst
+	OnRestartService func() // called to restart the systemd user service
+	OnRegenUUID      func() // called to regenerate UUID and restart the service
 }
 
 // Server is the HTTP server for all UPnP/DLNA and file-serving endpoints.
@@ -88,13 +87,13 @@ func New(cfg Config) *Server {
 
 // ListenAndServe starts the HTTP server.
 func (s *Server) ListenAndServe() error {
-	var h http.Handler = s.mux
-	if s.cfg.Debug {
-		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			log.Printf("HTTP %s %s [%s]", r.Method, r.URL.Path, r.RemoteAddr)
-			s.mux.ServeHTTP(w, r)
-		})
-	}
+	h := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slog.Debug("http",
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.String("remote", r.RemoteAddr))
+		s.mux.ServeHTTP(w, r)
+	}))
 	return http.ListenAndServe(fmt.Sprintf(":%d", s.cfg.Port), h)
 }
 
@@ -102,17 +101,17 @@ func (s *Server) ListenAndServe() error {
 
 func (s *Server) deviceDesc(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	fmt.Fprintf(w, deviceDescXML, s.cfg.Name, s.cfg.UUID)
+	_, _ = fmt.Fprintf(w, deviceDescXML, s.cfg.Name, s.cfg.UUID)
 }
 
 func (s *Server) contentDirSCPD(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	fmt.Fprint(w, contentDirSCPDXML)
+	_, _ = fmt.Fprint(w, contentDirSCPDXML)
 }
 
 func (s *Server) connMgrSCPD(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	fmt.Fprint(w, connMgrSCPDXML)
+	_, _ = fmt.Fprint(w, connMgrSCPDXML)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -222,7 +221,9 @@ func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 	)
 	req, err := http.NewRequest("NOTIFY", s.callback, strings.NewReader(body))
 	if err != nil {
-		log.Printf("event: bad callback URL %q: %v", s.callback, err)
+		slog.Warn("event: bad callback URL",
+			slog.String("callback", s.callback),
+			slog.Any("err", err))
 		return
 	}
 	req.Header.Set("Content-Type", "text/xml")
@@ -232,11 +233,15 @@ func (ss *subscriptions) notifyOne(sid string, updateID int64) {
 	req.Header.Set("SEQ", fmt.Sprintf("%d", seq))
 	resp, err := notifyClient.Do(req)
 	if err != nil {
-		log.Printf("event: NOTIFY %s failed: %v", s.callback, err)
+		slog.Warn("event: NOTIFY failed",
+			slog.String("callback", s.callback),
+			slog.Any("err", err))
 		return
 	}
-	resp.Body.Close()
-	log.Printf("event: NOTIFY %s → %s", s.callback, resp.Status)
+	_ = resp.Body.Close()
+	slog.Debug("event: NOTIFY sent",
+		slog.String("callback", s.callback),
+		slog.String("status", resp.Status))
 }
 
 // ----- ContentDirectory:1 SOAP control -----
@@ -252,7 +257,7 @@ func (s *Server) contentDirControl(w http.ResponseWriter, r *http.Request) {
 	case "GetSearchCapabilities":
 		soapResp(w, "GetSearchCapabilities", contentDirNS, "<SearchCaps></SearchCaps>")
 	default:
-		log.Printf("ContentDir: unknown action %q", soapAction(r))
+		slog.Warn("ContentDir: unknown action", slog.String("action", soapAction(r)))
 		soapFault(w, 401, "Invalid Action")
 	}
 }
@@ -365,7 +370,7 @@ func (s *Server) connMgrControl(w http.ResponseWriter, r *http.Request) {
 				"<ProtocolInfo></ProtocolInfo><PeerConnectionManager>/</PeerConnectionManager>"+
 				"<PeerConnectionID>-1</PeerConnectionID><Direction>Output</Direction><Status>OK</Status>")
 	default:
-		log.Printf("ConnMgr: unknown action %q", soapAction(r))
+		slog.Warn("ConnMgr: unknown action", slog.String("action", soapAction(r)))
 		soapFault(w, 401, "Invalid Action")
 	}
 }
@@ -389,7 +394,7 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -412,29 +417,29 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 	all := s.cfg.Library.AllItems()
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, uiHeader)
+	_, _ = fmt.Fprint(w, uiHeader)
 
 	s.renderSection(w, "Recently Watched", watched2items(watched), true, true)
 	s.renderSection(w, "Recent", recent, false, false)
 	s.renderSection(w, "All", all, false, false)
 
 	collapseAll := (len(watched) > 0 || len(recent) > 0) && len(all) > 0
-	fmt.Fprintf(w, uiInitScript, collapseAll,
+	_, _ = fmt.Fprintf(w, uiInitScript, collapseAll,
 		r.URL.Query().Get("discarded"), r.URL.Query().Get("dtitle"))
-	fmt.Fprint(w, `</body></html>`)
+	_, _ = fmt.Fprint(w, `</body></html>`)
 }
 
 func (s *Server) renderSection(w http.ResponseWriter, title string, items []*media.Item, showEmpty bool, showDiscard bool) {
 	slug := strings.ToLower(strings.ReplaceAll(title, " ", "-"))
 	if len(items) == 0 {
 		if showEmpty {
-			fmt.Fprintf(w,
+			_, _ = fmt.Fprintf(w,
 				`<div class="section" data-section="%s"><h2 onclick="toggleSection(this)">%s <span class="badge">0</span><span class="caret">▾</span></h2><p class="empty">Nothing yet.</p></div>`,
 				slug, title)
 		}
 		return
 	}
-	fmt.Fprintf(w,
+	_, _ = fmt.Fprintf(w,
 		`<div class="section" data-section="%s"><h2 onclick="toggleSection(this)">%s <span class="badge">%d</span><span class="caret">▾</span></h2><ul>`,
 		slug, title, len(items))
 	for _, item := range items {
@@ -446,12 +451,12 @@ func (s *Server) renderSection(w http.ResponseWriter, title string, items []*med
 		if showDiscard {
 			discard = fmt.Sprintf(`<a class="discard" href="/ui/discard?id=%s">Discard</a>`, item.ID)
 		}
-		fmt.Fprintf(w,
+		_, _ = fmt.Fprintf(w,
 			`<li><div class="item-info"><a class="title" href="/ui/watch?id=%s">%s</a>%s</div>`+
 				`<div class="actions">%s<a class="del" href="/ui/delete?id=%s" data-title="%s" onclick="return inlineDel(event,this)">Delete</a></div></li>`,
 			item.ID, escXML(item.Title), size, discard, item.ID, escXML(item.Title))
 	}
-	fmt.Fprint(w, `</ul></div>`)
+	_, _ = fmt.Fprint(w, `</ul></div>`)
 }
 
 func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request) {
@@ -467,7 +472,7 @@ func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, uiWatchPage, escXML(item.Title), item.ID, item.MIMEType, escXML(item.Title))
+	_, _ = fmt.Fprintf(w, uiWatchPage, escXML(item.Title), item.ID, item.MIMEType, escXML(item.Title))
 }
 
 func (s *Server) refreshLibrary(w http.ResponseWriter, r *http.Request) {
@@ -485,7 +490,7 @@ func (s *Server) restartService(w http.ResponseWriter, r *http.Request) {
 		go s.cfg.OnRestartService()
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, uiRestartingPage)
+	_, _ = fmt.Fprint(w, uiRestartingPage)
 }
 
 func (s *Server) regenUUID(w http.ResponseWriter, r *http.Request) {
@@ -493,7 +498,7 @@ func (s *Server) regenUUID(w http.ResponseWriter, r *http.Request) {
 		go s.cfg.OnRegenUUID()
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, uiRestartingPage)
+	_, _ = fmt.Fprint(w, uiRestartingPage)
 }
 
 func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
@@ -799,7 +804,7 @@ func soapAction(r *http.Request) string {
 func soapResp(w http.ResponseWriter, action, ns, body string) {
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
 	w.Header().Set("EXT", "")
-	fmt.Fprintf(w,
+	_, _ = fmt.Fprintf(w,
 		`<?xml version="1.0" encoding="utf-8"?>`+
 			`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">`+
 			`<s:Body><u:%sResponse xmlns:u="%s">%s</u:%sResponse></s:Body>`+
@@ -811,7 +816,7 @@ func soapResp(w http.ResponseWriter, action, ns, body string) {
 func soapFault(w http.ResponseWriter, code int, desc string) {
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
 	w.WriteHeader(http.StatusInternalServerError)
-	fmt.Fprintf(w,
+	_, _ = fmt.Fprintf(w,
 		`<?xml version="1.0"?>`+
 			`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">`+
 			`<s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring>`+
@@ -824,7 +829,7 @@ func soapFault(w http.ResponseWriter, code int, desc string) {
 
 func escXML(s string) string {
 	var b strings.Builder
-	xml.EscapeText(&b, []byte(s))
+	_ = xml.EscapeText(&b, []byte(s))
 	return b.String()
 }
 

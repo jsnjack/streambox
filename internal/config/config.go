@@ -4,7 +4,7 @@ import "github.com/BurntSushi/toml"
 
 // DefaultConfig is the template written by `streambox config init`.
 const DefaultConfig = `# streambox configuration
-# Edit this file, then run: streambox serve --config ~/.config/streambox/config.toml
+# Edit this file, then run: streambox --config ~/.config/streambox/config.toml
 
 # Path to the directory containing your video files (required).
 media_dir = "~/Videos"
@@ -19,11 +19,8 @@ name = "StreamBox"
 # Set to 0 to disable the Recent folder.
 recent_days = 14
 
-# Write log output to this file in addition to stderr.
-# Leave empty to log to stderr only.
-log_file = "/tmp/streambox.log"
-
 # Enable verbose debug logging (HTTP requests, SSDP activity).
+# Equivalent to passing --debug on the command line.
 debug = false
 
 # When enabled, streambox watches for new subfolders inside media_dir.
@@ -40,7 +37,6 @@ type Config struct {
 	Name       string `toml:"name"`
 	RecentDays int    `toml:"recent_days"`
 	Debug      bool   `toml:"debug"`
-	LogFile    string `toml:"log_file"`
 	// Flatten moves video files from newly-detected subfolders into the root
 	// media_dir and removes the now-empty subfolder. Useful when a downloader
 	// puts each release in its own directory. The folder is only processed once
@@ -55,7 +51,6 @@ func Defaults() Config {
 		Port:       8080,
 		Name:       "StreamBox",
 		RecentDays: 14,
-		LogFile:    "/tmp/streambox.log",
 	}
 }
 

@@ -4,7 +4,7 @@ package ssdp
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -25,7 +25,6 @@ type Server struct {
 	uuid     string
 	location string
 	iface    *net.Interface // if set, restrict to this interface; otherwise use all physical
-	debug    bool
 	aliveCh  chan struct{}
 	pc       *ipv4.PacketConn // set during Start
 
@@ -34,8 +33,8 @@ type Server struct {
 }
 
 // New creates a new SSDP server. iface may be nil for auto-detection.
-func New(uuid, location string, iface *net.Interface, debug bool) *Server {
-	return &Server{uuid: uuid, location: location, iface: iface, debug: debug, aliveCh: make(chan struct{}, 1)}
+func New(uuid, location string, iface *net.Interface) *Server {
+	return &Server{uuid: uuid, location: location, iface: iface, aliveCh: make(chan struct{}, 1)}
 }
 
 // SendAlive triggers an immediate ssdp:alive NOTIFY burst.
@@ -63,10 +62,10 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen udp4 :%d: %w", ssdpPort, err)
 	}
-	defer conn.Close()
-	if s.debug {
-		log.Printf("ssdp: listening on :%d, advertising %s", ssdpPort, s.location)
-	}
+	defer func() { _ = conn.Close() }()
+	slog.Debug("ssdp: listening",
+		slog.Int("port", ssdpPort),
+		slog.String("location", s.location))
 
 	pc := ipv4.NewPacketConn(conn)
 	s.pc = pc
@@ -77,15 +76,15 @@ func (s *Server) Start(ctx context.Context) error {
 	for _, iface := range s.activeIfaces() {
 		if err := pc.JoinGroup(iface, group); err == nil {
 			joined++
-			if s.debug {
-				log.Printf("ssdp: joined multicast group on %s", iface.Name)
-			}
+			slog.Debug("ssdp: joined multicast group", slog.String("iface", iface.Name))
 		} else {
-			log.Printf("ssdp: JoinGroup %s: %v", iface.Name, err)
+			slog.Warn("ssdp: JoinGroup failed",
+				slog.String("iface", iface.Name),
+				slog.Any("err", err))
 		}
 	}
 	if joined == 0 {
-		log.Printf("ssdp: WARNING: failed to join multicast group on any interface — discovery will not work")
+		slog.Warn("ssdp: failed to join multicast group on any interface — discovery will not work")
 	}
 
 	// Send 3 initial NOTIFYs spaced 200ms apart (standard DLNA practice).
@@ -125,7 +124,7 @@ func (s *Server) Start(ctx context.Context) error {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
-			log.Printf("ssdp read: %v", err)
+			slog.Warn("ssdp read failed", slog.Any("err", err))
 			continue
 		}
 		go s.handle(conn, src, string(buf[:n]))
@@ -137,9 +136,9 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 		return
 	}
 	st := ssdpHeader(msg, "ST")
-	if s.debug {
-		log.Printf("ssdp: M-SEARCH from %s ST=%q", src, st)
-	}
+	slog.Debug("ssdp: M-SEARCH received",
+		slog.String("src", src.String()),
+		slog.String("st", st))
 	if st == "" {
 		return
 	}
@@ -153,9 +152,7 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 	}
 	s.lastByebyeMu.Unlock()
 	if doBye {
-		if s.debug {
-			log.Printf("ssdp: sending byebye+alive cycle (cache bust)")
-		}
+		slog.Debug("ssdp: sending byebye+alive cycle (cache bust)")
 		s.notify(conn, false)
 		time.Sleep(200 * time.Millisecond)
 		s.notify(conn, true)
@@ -177,9 +174,13 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 			s.location, e.nt, e.usn,
 		)
 		if _, err := conn.WriteToUDP([]byte(resp), src); err != nil {
-			log.Printf("ssdp: response to %s: %v", src, err)
-		} else if s.debug {
-			log.Printf("ssdp: responded to %s with ST=%s", src, e.nt)
+			slog.Warn("ssdp: response failed",
+				slog.String("src", src.String()),
+				slog.Any("err", err))
+		} else {
+			slog.Debug("ssdp: responded",
+				slog.String("src", src.String()),
+				slog.String("st", e.nt))
 		}
 	}
 }
@@ -221,8 +222,10 @@ func (s *Server) notifyTo(conn *net.UDPConn, dst *net.UDPAddr, alive bool) {
 				ssdpIP, ssdpPort, e.nt, e.usn,
 			)
 		}
-		if _, err := conn.WriteToUDP([]byte(msg), dst); err != nil && s.debug {
-			log.Printf("ssdp notify %s: %v", dst.IP, err)
+		if _, err := conn.WriteToUDP([]byte(msg), dst); err != nil {
+			slog.Debug("ssdp: notify failed",
+				slog.String("dst", dst.IP.String()),
+				slog.Any("err", err))
 		}
 	}
 }

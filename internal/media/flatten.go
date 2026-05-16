@@ -2,7 +2,8 @@ package media
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -64,22 +65,28 @@ func flattenDir(dir, root string) {
 		}
 		dst := filepath.Join(root, d.Name())
 		if _, err := os.Stat(dst); err == nil {
-			log.Printf("flatten: skip %s — destination already exists", d.Name())
+			slog.Info("flatten: skip — destination exists", slog.String("file", d.Name()))
 			return nil
 		}
 		if err := os.Rename(path, dst); err != nil {
-			log.Printf("flatten: move %s: %v", d.Name(), err)
+			slog.Warn("flatten: move failed",
+				slog.String("file", d.Name()),
+				slog.Any("err", err))
 			return nil
 		}
 		moved++
-		log.Printf("flatten: moved %s → %s", path, dst)
+		slog.Info("flatten: moved",
+			slog.String("src", path),
+			slog.String("dst", dst))
 		return nil
 	})
 	if moved > 0 {
 		if err := os.RemoveAll(dir); err != nil {
-			log.Printf("flatten: remove dir %s: %v", dir, err)
+			slog.Warn("flatten: remove dir failed",
+				slog.String("dir", dir),
+				slog.Any("err", err))
 		} else {
-			log.Printf("flatten: removed %s", dir)
+			slog.Info("flatten: removed dir", slog.String("dir", dir))
 		}
 	}
 }
@@ -110,8 +117,8 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 		return err
 	}
 	if err := watcher.Add(root); err != nil {
-		watcher.Close()
-		return err
+		_ = watcher.Close()
+		return fmt.Errorf("flatten: watch root %q: %w", root, err)
 	}
 
 	// pending tracks directories waiting for their stability check.
@@ -120,15 +127,15 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 	// Seed pending with any subdirectories that already exist at startup.
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		watcher.Close()
-		return err
+		_ = watcher.Close()
+		return fmt.Errorf("flatten: read root %q: %w", root, err)
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		dir := filepath.Join(root, e.Name())
-		log.Printf("flatten: existing dir queued: %s", dir)
+		slog.Info("flatten: existing dir queued", slog.String("dir", dir))
 		pending[dir] = snapshotDir(dir)
 	}
 
@@ -136,7 +143,7 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 	ticker := time.NewTicker(flattenStabilityInterval)
 
 	go func() {
-		defer watcher.Close()
+		defer func() { _ = watcher.Close() }()
 		defer ticker.Stop()
 		for {
 			select {
@@ -158,7 +165,7 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 				if filepath.Dir(event.Name) != root {
 					continue
 				}
-				log.Printf("flatten: new dir detected: %s", event.Name)
+				slog.Info("flatten: new dir detected", slog.String("dir", event.Name))
 				pending[event.Name] = snapshotDir(event.Name)
 
 			case <-ticker.C:
@@ -177,15 +184,19 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 					delete(pending, dir)
 					if len(curr.entries) == 0 {
 						// Stable but empty — remove it.
-						log.Printf("flatten: removing empty dir %s", dir)
+						slog.Info("flatten: removing empty dir", slog.String("dir", dir))
 						if err := os.RemoveAll(dir); err != nil {
-							log.Printf("flatten: remove %s: %v", dir, err)
+							slog.Warn("flatten: remove failed",
+								slog.String("dir", dir),
+								slog.Any("err", err))
 						}
 					} else if !hasVideoFiles(dir) {
 						// Stable but contains no video files — remove it.
-						log.Printf("flatten: removing non-video dir %s", dir)
+						slog.Info("flatten: removing non-video dir", slog.String("dir", dir))
 						if err := os.RemoveAll(dir); err != nil {
-							log.Printf("flatten: remove %s: %v", dir, err)
+							slog.Warn("flatten: remove failed",
+								slog.String("dir", dir),
+								slog.Any("err", err))
 						}
 					} else {
 						flattenDir(dir, root)
@@ -197,7 +208,7 @@ func WatchAndFlatten(ctx context.Context, root string, onFlatten func()) error {
 				if !ok {
 					return
 				}
-				log.Printf("flatten watcher: %v", err)
+				slog.Warn("flatten watcher error", slog.Any("err", err))
 			}
 		}
 	}()

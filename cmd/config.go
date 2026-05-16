@@ -18,7 +18,7 @@ func init() {
 
 	initCmd := &cobra.Command{
 		Use:   "init",
-		Short: "Write a default config to ~/.config/streambox/config.toml",
+		Short: "Write a default config to <user-config-dir>/streambox/config.toml",
 		RunE:  runConfigInit,
 	}
 	initCmd.Flags().BoolP("force", "f", false, "Overwrite an existing config file")
@@ -30,12 +30,12 @@ func init() {
 func runConfigInit(cmd *cobra.Command, args []string) error {
 	force, _ := cmd.Flags().GetBool("force")
 
-	home, err := os.UserHomeDir()
+	cfgRoot, err := os.UserConfigDir()
 	if err != nil {
-		return fmt.Errorf("resolving home directory: %w", err)
+		return fmt.Errorf("resolving user config dir: %w", err)
 	}
 
-	dir := filepath.Join(home, ".config", "streambox")
+	dir := filepath.Join(cfgRoot, "streambox")
 	path := filepath.Join(dir, "config.toml")
 
 	if !force {
@@ -52,6 +52,6 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("writing config file: %w", err)
 	}
 
-	fmt.Printf("Config written to %s\nEdit media_dir then run:\n  streambox serve --config %s\n", path, path)
+	fmt.Printf("Config written to %s\nEdit media_dir then run:\n  streambox --config %s\n", path, path)
 	return nil
 }

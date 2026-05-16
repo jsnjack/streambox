@@ -1,6 +1,6 @@
 # streambox configuration file
 # Copy to streambox.toml and adjust values, then run:
-#   streambox serve --config /path/to/streambox.toml
+#   streambox --config /path/to/streambox.toml
 
 # Path to the directory containing your video files (required).
 media_dir = "~/Videos"
@@ -15,11 +15,8 @@ name = "StreamBox"
 # Set to 0 to disable the Recent folder.
 recent_days = 14
 
-# Write log output to this file in addition to stderr.
-# Leave empty to log to stderr only.
-log_file = "/tmp/streambox.log"
-
 # Enable verbose debug logging (HTTP requests, SSDP activity).
+# Equivalent to passing --debug on the command line.
 debug = false
 
 # When enabled, streambox watches for new subfolders inside media_dir.
