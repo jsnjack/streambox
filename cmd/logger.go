@@ -22,7 +22,7 @@ var L *slog.Logger
 // Behaviour:
 //   - tracePath set:       write at LevelTrace to that file (truncated).
 //   - level == "debug":    write at LevelDebug to stderr.
-//   - otherwise (default): write warnings/errors to stderr.
+//   - otherwise (default): write info-and-above to stderr.
 func initLogger(tracePath, level string) func() {
 	var w io.Writer = os.Stderr
 	cleanup := func() {}
@@ -37,7 +37,7 @@ func initLogger(tracePath, level string) func() {
 			}
 		}
 	}
-	lvl := slog.LevelWarn
+	lvl := slog.LevelInfo
 	switch level {
 	case "debug":
 		lvl = slog.LevelDebug
