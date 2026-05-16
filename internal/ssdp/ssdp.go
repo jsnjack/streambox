@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/ipv4"
@@ -23,10 +24,12 @@ type entry struct{ nt, usn string }
 
 // Server handles SSDP multicast discovery for the media server device.
 type Server struct {
+	mu       sync.RWMutex
 	uuid     string
 	location string
 	iface    *net.Interface // if set, restrict to this interface; otherwise use all physical
 	aliveCh  chan struct{}
+	conn     *net.UDPConn     // set once in Start; read by UpdateIdentity
 	pc       *ipv4.PacketConn // set during Start
 }
 
@@ -43,8 +46,8 @@ func (s *Server) SendAlive() {
 	}
 }
 
-func (s *Server) entries() []entry {
-	u := s.uuid
+func buildEntries(uuid string) []entry {
+	u := uuid
 	return []entry{
 		{"upnp:rootdevice", fmt.Sprintf("uuid:%s::upnp:rootdevice", u)},
 		{fmt.Sprintf("uuid:%s", u), fmt.Sprintf("uuid:%s", u)},
@@ -71,6 +74,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	pc := ipv4.NewPacketConn(conn)
 	s.pc = pc
+	s.mu.Lock()
+	s.conn = conn
+	s.mu.Unlock()
 	if err := pc.SetMulticastTTL(4); err != nil {
 		slog.Log(ctx, loglevel.LevelTrace, "ssdp: set multicast ttl", "err", err)
 	}
@@ -149,7 +155,11 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 		return
 	}
 
-	for _, e := range s.entries() {
+	s.mu.RLock()
+	uuid, location := s.uuid, s.location
+	s.mu.RUnlock()
+
+	for _, e := range buildEntries(uuid) {
 		if st != "ssdp:all" && st != e.nt {
 			continue
 		}
@@ -162,7 +172,7 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 				"ST: %s\r\n"+
 				"USN: %s\r\n"+
 				"\r\n",
-			s.location, e.nt, e.usn,
+			location, e.nt, e.usn,
 		)
 		if _, err := conn.WriteToUDP([]byte(resp), src); err != nil {
 			slog.Warn("ssdp: response failed",
@@ -177,6 +187,13 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, msg string) {
 }
 
 func (s *Server) notify(conn *net.UDPConn, alive bool) {
+	s.mu.RLock()
+	uuid, location := s.uuid, s.location
+	s.mu.RUnlock()
+	s.notifyAs(conn, alive, uuid, location)
+}
+
+func (s *Server) notifyAs(conn *net.UDPConn, alive bool, uuid, location string) {
 	dst := &net.UDPAddr{IP: net.ParseIP(ssdpIP), Port: ssdpPort}
 	for _, iface := range s.activeIfaces() {
 		if s.pc != nil {
@@ -184,12 +201,12 @@ func (s *Server) notify(conn *net.UDPConn, alive bool) {
 				slog.Log(context.Background(), loglevel.LevelTrace, "ssdp: set multicast interface", "iface", iface.Name, "err", err)
 			}
 		}
-		s.notifyTo(conn, dst, alive)
+		s.notifyTo(conn, dst, alive, uuid, location)
 	}
 }
 
-func (s *Server) notifyTo(conn *net.UDPConn, dst *net.UDPAddr, alive bool) {
-	for _, e := range s.entries() {
+func (s *Server) notifyTo(conn *net.UDPConn, dst *net.UDPAddr, alive bool, uuid, location string) {
+	for _, e := range buildEntries(uuid) {
 		var msg string
 		if alive {
 			msg = fmt.Sprintf(
@@ -202,7 +219,7 @@ func (s *Server) notifyTo(conn *net.UDPConn, dst *net.UDPAddr, alive bool) {
 					"SERVER: Linux/1.0 UPnP/1.0 StreamBox/1.0\r\n"+
 					"USN: %s\r\n"+
 					"\r\n",
-				ssdpIP, ssdpPort, s.location, e.nt, e.usn,
+				ssdpIP, ssdpPort, location, e.nt, e.usn,
 			)
 		} else {
 			msg = fmt.Sprintf(
@@ -220,6 +237,30 @@ func (s *Server) notifyTo(conn *net.UDPConn, dst *net.UDPAddr, alive bool) {
 				slog.String("dst", dst.IP.String()),
 				slog.Any("err", err))
 		}
+	}
+}
+
+// UpdateIdentity swaps the server's UUID and location in-place.
+// It sends a byebye under the old identity, updates the fields, then sends
+// an alive under the new identity so clients immediately see the new device.
+func (s *Server) UpdateIdentity(uuid, location string) {
+	s.mu.RLock()
+	oldUUID, oldLocation := s.uuid, s.location
+	conn := s.conn
+	s.mu.RUnlock()
+
+	if conn != nil {
+		s.notifyAs(conn, false, oldUUID, oldLocation)
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	s.mu.Lock()
+	s.uuid = uuid
+	s.location = location
+	s.mu.Unlock()
+
+	if conn != nil {
+		s.notifyAs(conn, true, uuid, location)
 	}
 }
 

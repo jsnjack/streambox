@@ -150,6 +150,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading uuid: %w", err)
 	}
+	baseName := cfg.Name
 	if gen := loadGeneration(); gen > 1 {
 		cfg.Name = fmt.Sprintf("%s %d", cfg.Name, gen)
 	}
@@ -193,17 +194,24 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}
 		},
 		OnRegenUUID: func() {
-			if err := saveGeneration(loadGeneration() + 1); err != nil {
+			newUUID := newUUID()
+			gen := loadGeneration() + 1
+			if err := saveGeneration(gen); err != nil {
 				slog.Warn("regen uuid: save generation failed", slog.Any("err", err))
 			}
-			if path, err := uuidPath(); err == nil {
-				if rerr := os.Remove(path); rerr != nil {
-					slog.Log(context.Background(), LevelTrace, "regen uuid: remove file", "path", path, "err", rerr)
-				}
+			newName := baseName
+			if gen > 1 {
+				newName = fmt.Sprintf("%s %d", baseName, gen)
 			}
-			if err := exec.Command("systemctl", "--user", "restart", "streambox").Run(); err != nil {
-				slog.Warn("regen uuid restart failed", slog.Any("err", err))
+			if err := saveUUID(newUUID); err != nil {
+				slog.Warn("regen uuid: save uuid failed", slog.Any("err", err))
 			}
+			newLocation := fmt.Sprintf("http://%s:%d/device.xml", ip, cfg.Port)
+			if ssdpSrv != nil {
+				ssdpSrv.UpdateIdentity(newUUID, newLocation)
+			}
+			srv.UpdateIdentity(newUUID, newName)
+			slog.Info("uuid regenerated", slog.String("name", newName), slog.String("uuid", newUUID))
 		},
 	})
 	srv.SetUpdateID(updateID)
@@ -337,13 +345,24 @@ func loadOrCreateUUID() (string, error) {
 		}
 	}
 	u := newUUID()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("creating data dir: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(u+"\n"), 0o644); err != nil {
-		return "", fmt.Errorf("writing uuid: %w", err)
+	if err := saveUUID(u); err != nil {
+		return "", err
 	}
 	return u, nil
+}
+
+func saveUUID(u string) error {
+	path, err := uuidPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating data dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(u+"\n"), 0o644); err != nil {
+		return fmt.Errorf("writing uuid: %w", err)
+	}
+	return nil
 }
 
 func newUUID() string {

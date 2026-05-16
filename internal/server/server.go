@@ -47,12 +47,13 @@ type Config struct {
 
 // Server is the HTTP server for all UPnP/DLNA and file-serving endpoints.
 type Server struct {
-	cfg      Config
-	mux      *http.ServeMux
-	updateID atomic.Int64
-	subs     subscriptions
-	undoMu   sync.Mutex
-	undoBuf  map[string]undoEntry
+	cfg        Config
+	mux        *http.ServeMux
+	updateID   atomic.Int64
+	subs       subscriptions
+	undoMu     sync.Mutex
+	undoBuf    map[string]undoEntry
+	identityMu sync.RWMutex
 }
 
 type undoEntry struct {
@@ -111,8 +112,19 @@ func (s *Server) ListenAndServe() error {
 
 func (s *Server) deviceDesc(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	_, err := fmt.Fprintf(w, deviceDescXML, s.cfg.Name, s.cfg.UUID)
+	s.identityMu.RLock()
+	name, uuid := s.cfg.Name, s.cfg.UUID
+	s.identityMu.RUnlock()
+	_, err := fmt.Fprintf(w, deviceDescXML, name, uuid)
 	logFprintErr(r.Context(), "write device.xml", err)
+}
+
+// UpdateIdentity updates the device's UUID and friendly name in-place.
+func (s *Server) UpdateIdentity(uuid, name string) {
+	s.identityMu.Lock()
+	s.cfg.UUID = uuid
+	s.cfg.Name = name
+	s.identityMu.Unlock()
 }
 
 func (s *Server) contentDirSCPD(w http.ResponseWriter, r *http.Request) {
@@ -521,11 +533,9 @@ func (s *Server) restartService(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) regenUUID(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.OnRegenUUID != nil {
-		go s.cfg.OnRegenUUID()
+		s.cfg.OnRegenUUID()
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, err := fmt.Fprint(w, uiRestartingPage)
-	logFprintErr(r.Context(), "ui: write regen-uuid page", err)
+	http.Redirect(w, r, "/ui", http.StatusSeeOther)
 }
 
 func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
