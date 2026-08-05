@@ -6,9 +6,11 @@ import (
 	"encoding/xml"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -604,7 +606,13 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", item.MIMEType)
 	w.Header().Set("transferMode.dlna.org", "Streaming")
 	w.Header().Set("contentFeatures.dlna.org", "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000")
-	if s.cfg.History != nil {
+	download := r.URL.Query().Has("download")
+	if download {
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{
+			"filename": filepath.Base(item.Path),
+		}))
+	}
+	if s.cfg.History != nil && !download {
 		s.cfg.History.Record(item)
 	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
@@ -660,8 +668,8 @@ func (s *Server) renderSection(ctx context.Context, w http.ResponseWriter, title
 		}
 		_, err := fmt.Fprintf(w,
 			`<li><div class="item-info"><a class="title" href="/ui/watch?id=%s">%s</a>%s</div>`+
-				`<div class="actions">%s<a class="del" href="/ui/delete?id=%s" data-title="%s" onclick="return inlineDel(event,this)">Delete</a></div></li>`,
-			item.ID, escXML(item.Title), size, discard, item.ID, escXML(item.Title))
+				`<div class="actions"><a class="download" href="/files/%s?download=1" download>Download</a>%s<a class="del" href="/ui/delete?id=%s" data-title="%s" onclick="return inlineDel(event,this)">Delete</a></div></li>`,
+			item.ID, escXML(item.Title), size, item.ID, discard, item.ID, escXML(item.Title))
 		logFprintErr(ctx, "ui: write section item", err)
 	}
 	_, err = fmt.Fprint(w, `</ul></div>`)
@@ -830,8 +838,10 @@ const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
   a.title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#eee;text-decoration:none}
   a.title:hover{color:#fff;text-decoration:underline}
   .size{color:#555;font-size:.75em}
-  .actions{display:flex;align-items:center;gap:.5em;flex-shrink:0}
-  a.del,a.discard{text-decoration:none;font-size:.85em;white-space:nowrap}
+  .actions{display:flex;align-items:center;gap:.55em;flex-shrink:0}
+  a.download,a.del,a.discard{text-decoration:none;font-size:.85em;white-space:nowrap}
+  a.download{display:inline-flex;align-items:center;padding:.35em .6em;border:1px solid #31506b;border-radius:4px;background:#17222c;color:#8cc8ff}
+  a.download:hover{color:#c5e5ff;border-color:#6597bd;background:#1b2b38}
   a.del{color:#e55}
   a.del:hover{color:#f88}
   a.discard{color:#666}
@@ -850,6 +860,7 @@ const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
   #toast a.close-t:hover{color:#aaa}
   @media(pointer:coarse){
     .actions{transform:translateX(110%);position:absolute;right:0;top:0;bottom:0;background:#1d1d1d;padding:0 .8em;border-left:1px solid #2a2a2a;transition:transform .2s;z-index:1}
+    .actions a.download{display:none}
     li.swiped .actions{transform:translateX(0)}
     li::after{content:'';position:absolute;right:0;top:20%;bottom:20%;width:3px;background:#2e2e2e;border-radius:2px;pointer-events:none}
     li.swiped::after{display:none}
