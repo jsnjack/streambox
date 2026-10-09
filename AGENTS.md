@@ -43,6 +43,14 @@ internal/
                               the subfolder's contents stop changing.
     history.go                Bounded watch history with undo buffer.
   server/
+    playback.go               Browser playback HTTP endpoints, embedded player
+                              page and asset serving, conversion shutdown.
+    transcode.go              ffprobe metadata cache, VA-API/software H.264
+                              conversion, paced HLS sessions and buffer cleanup.
+    static/                   Player JavaScript/CSS and vendored hls.js 1.7.3
+                              with Apache 2.0 license and provenance.
+    thumbnails.go             On-demand FFmpeg frame extraction, bounded
+                              in-memory LRU cache, JPEG_TN HTTP endpoint.
     server.go                 UPnP device + service descriptors,
                               ContentDirectory SOAP, file serving,
                               event subscriptions, web UI templates,
@@ -126,6 +134,34 @@ on every process start.
 ---
 
 ## Design Decisions
+
+- **Browser playback preserves 1080p.** Browser-compatible MP4/WebM files play
+  directly; compatible H.264 is remuxed, with AAC conversion only when needed.
+  Other video uses VA-API hardware decoding/scaling/encoding when a Linux render
+  device is present, then software decode + hardware encode, then two-thread
+  `libx264` ultrafast. Encoding fits within 1920×1080 without upscaling. HLS uses
+  fragmented MP4, a paced rolling buffer of 12 segments (~24 s for encodes),
+  and locally embedded hls.js. Seeking starts a new session; copy seeks report
+  the real keyframe position so the player can skip preroll accurately. Pause
+  and page exit stop sessions; idle sessions expire after 1 minute. At most one
+  video encode and two converted sessions run concurrently. `Server.Close`
+  cancels conversions and removes buffers on process shutdown. Browser resume
+  positions and volume live in localStorage, not in server state files.
+
+- **Playback integration checks.** `go test -tags integration ./internal/server`
+  requires FFmpeg/ffprobe and generates synthetic videos to check JPEG frames,
+  codec copying, audio conversion, seeking, 1080p scaling, hardware fallback,
+  HTTP streaming, and cleanup. Normal `make check` tests use isolated fixtures
+  and do not require FFmpeg.
+
+- **On-demand thumbnails.** If FFmpeg is on PATH, `/thumbnails/<id>` extracts
+  a frame at five seconds (falling back to the start for short clips) as a
+  JPEG_TN image bounded to 160×160. The web UI loads images lazily and DIDL
+  advertises `upnp:albumArtURI`. One FFmpeg process runs at a time with a 20 s
+  timeout including queueing. A 256-entry in-memory LRU is keyed by path, size,
+  and modification time; failures are cached for one minute. No persistent
+  cache files or watch history entries are created. Missing FFmpeg disables
+  thumbnails without affecting browsing or playback.
 
 - **No persistent identity.** The server has no `uuid` or `updateid` file.
   Every start gets a fresh random UUID; `SystemUpdateID` is seeded from

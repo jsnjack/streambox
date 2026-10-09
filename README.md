@@ -47,6 +47,53 @@ When you run `streambox` it will:
  - generate clean, human-readable titles from filenames
  - regenerate its UPnP UUID automatically when files change, so the TV picks up new content without manual intervention
 
+### Browser playback
+
+Open `http://<host>:8080/ui` and select a video. The browser player includes a
+full-video seek bar, volume controls, fullscreen, keyboard shortcuts, and resume
+positions saved in that browser. Press Space to pause, the arrow keys to skip
+10 seconds, M to mute, and F for fullscreen.
+
+Install **FFmpeg and ffprobe** on the server for automatic format conversion.
+Browser-compatible MP4 and WebM files play directly. H.264 video in other
+containers is copied into an HLS stream without video encoding; incompatible
+audio is converted to AAC. Other video formats are converted on demand to
+H.264/AAC at **up to 1920×1080**, preserving smaller source resolutions.
+
+On Linux, Streambox automatically tries a `/dev/dri/renderD*` graphics device
+for VA-API hardware decoding, scaling, and H.264 encoding. This uses the Intel
+media hardware on N200 systems when the appropriate drivers are installed and
+the service has access to the render device. If hardware decoding fails, it
+tries software decoding with hardware encoding, then falls back to a fast
+software encoder limited to two threads. Actual real-time performance depends
+on the source video and server hardware.
+
+Converted playback uses locally bundled hls.js; no CDN or JavaScript package
+installation is needed. Streams run at playback speed with a small rolling
+buffer under the system temporary directory. Seeking starts a new stream at
+the chosen position. Pausing, leaving the page, or shutting down the server
+stops conversion and removes its buffer; abandoned sessions expire after one
+minute without requests. One video transcode and up to two converted playback
+sessions may be active at a time. Direct browser and DLNA playback do not use
+these conversion slots.
+
+### Thumbnails
+
+Install [FFmpeg](https://ffmpeg.org/download.html) on the server and ensure
+`ffmpeg` is on its PATH. Streambox automatically shows video frame thumbnails
+in the web UI and advertises them to DLNA clients that display album art.
+
+Thumbnails are generated when requested, using a frame five seconds into the
+video (or the first frame for short clips). Generation runs one video at a time
+with a 20-second timeout. Up to 256 thumbnails are cached in memory; replacing
+or modifying a video invalidates its cached frame. No images are written into
+your media directory, and thumbnail requests do not record watch history.
+
+Without FFmpeg, browsing and playback continue with text listings. A video that
+cannot be decoded shows an empty thumbnail in the web UI; failed generation is
+retried after one minute. Whether a TV displays the supplied thumbnail depends
+on its DLNA client.
+
 ### LG TV: stale folder content
 
 LG TVs aggressively cache DLNA folder listings and often ignore standard

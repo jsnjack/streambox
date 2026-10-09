@@ -67,6 +67,8 @@ type Server struct {
 	undoMu     sync.Mutex
 	undoBuf    map[string]undoEntry
 	identityMu sync.RWMutex
+	thumbnails *thumbnailCache
+	playback   *browserPlayback
 
 	// Auto-regen state. A library change marks regenPending=true; the next
 	// gate evaluation (BumpUpdateID or the background ticker) fires
@@ -115,6 +117,8 @@ func New(cfg Config) *Server {
 		cfg:           cfg,
 		mux:           http.NewServeMux(),
 		historicUUIDs: make(map[string]struct{}),
+		thumbnails:    newThumbnailCache(),
+		playback:      newBrowserPlayback(),
 	}
 	s.mux.HandleFunc("/device.xml", s.deviceDesc)
 	s.mux.HandleFunc("/contentdirectory.xml", s.contentDirSCPD)
@@ -124,6 +128,12 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("/contentdirectory/events", s.handleEvents)
 	s.mux.HandleFunc("/connectionmanager/events", s.handleEvents)
 	s.mux.HandleFunc("/files/", s.serveFile)
+	s.mux.HandleFunc("/thumbnails/", s.serveThumbnail)
+	s.mux.HandleFunc("/playback/", s.servePlaybackFile)
+	s.mux.HandleFunc("/ui/assets/", s.servePlayerAsset)
+	s.mux.HandleFunc("/ui/playback", s.servePlaybackInfo)
+	s.mux.HandleFunc("/ui/playback/start", s.servePlaybackStart)
+	s.mux.HandleFunc("/ui/playback/stop", s.servePlaybackStop)
 	s.mux.HandleFunc("/ui", s.serveUI)
 	s.mux.HandleFunc("/ui/watch", s.serveWatch)
 	s.mux.HandleFunc("/ui/delete", s.deleteFile)
@@ -524,7 +534,7 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 // virtual containers like "Recent" whose items live elsewhere in the tree.
 func (s *Server) buildDIDL(objs []media.Object, parentCtx string) string {
 	var sb strings.Builder
-	sb.WriteString(`<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">`)
+	sb.WriteString(`<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">`)
 	for _, obj := range objs {
 		switch o := obj.(type) {
 		case *media.Container:
@@ -539,13 +549,18 @@ func (s *Server) buildDIDL(objs []media.Object, parentCtx string) string {
 		case *media.Item:
 			url := fmt.Sprintf("http://%s:%d/files/%s", s.cfg.IP, s.cfg.Port, o.ID)
 			proto := fmt.Sprintf("http-get:*:%s:DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000", o.MIMEType)
+			art := ""
+			if s.thumbnails != nil {
+				art = fmt.Sprintf(`<upnp:albumArtURI dlna:profileID="JPEG_TN">http://%s:%d/thumbnails/%s</upnp:albumArtURI>`, s.cfg.IP, s.cfg.Port, o.ID)
+			}
 			fmt.Fprintf(&sb,
 				`<item id=%q parentID=%q restricted="1">`+
 					`<dc:title>%s</dc:title>`+
 					`<upnp:class>object.item.videoItem</upnp:class>`+
+					`%s`+
 					`<res protocolInfo=%q size="%d">%s</res>`+
 					`</item>`,
-				o.ID, parentCtx, escXML(o.Title), proto, o.Size, url,
+				o.ID, parentCtx, escXML(o.Title), art, proto, o.Size, url,
 			)
 		}
 	}
@@ -666,10 +681,14 @@ func (s *Server) renderSection(ctx context.Context, w http.ResponseWriter, title
 		if showDiscard {
 			discard = fmt.Sprintf(`<a class="discard" href="/ui/discard?id=%s">Discard</a>`, item.ID)
 		}
+		thumbnail := ""
+		if s.thumbnails != nil {
+			thumbnail = fmt.Sprintf(`<a class="thumbnail" href="/ui/watch?id=%s" aria-label="Watch %s"><img src="/thumbnails/%s" alt="" width="96" height="54" loading="lazy" decoding="async" onerror="this.remove()"></a>`, item.ID, escXML(item.Title), item.ID)
+		}
 		_, err := fmt.Fprintf(w,
-			`<li><div class="item-info"><a class="title" href="/ui/watch?id=%s">%s</a>%s</div>`+
+			`<li>%s<div class="item-info"><a class="title" href="/ui/watch?id=%s">%s</a>%s</div>`+
 				`<div class="actions"><a class="download" href="/files/%s?download=1" download>Download</a>%s<a class="del" href="/ui/delete?id=%s" data-title="%s" onclick="return inlineDel(event,this)">Delete</a></div></li>`,
-			item.ID, escXML(item.Title), size, item.ID, discard, item.ID, escXML(item.Title))
+			thumbnail, item.ID, escXML(item.Title), size, item.ID, discard, item.ID, escXML(item.Title))
 		logFprintErr(ctx, "ui: write section item", err)
 	}
 	_, err = fmt.Fprint(w, `</ul></div>`)
@@ -688,9 +707,7 @@ func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, err := fmt.Fprintf(w, uiWatchPage, escXML(item.Title), item.ID, item.MIMEType, escXML(item.Title))
-	logFprintErr(r.Context(), "ui: write watch page", err)
+	s.renderWatchPage(w, r, item)
 }
 
 func (s *Server) refreshLibrary(w http.ResponseWriter, r *http.Request) {
@@ -835,6 +852,8 @@ const uiHeader = `<!DOCTYPE html><html><head><meta charset="utf-8">
   ul{list-style:none;padding:0;margin:0}
   li{display:flex;align-items:center;padding:.6em 0;border-bottom:1px solid #222;gap:.6em;position:relative;overflow:hidden}
   .item-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:.1em}
+  .thumbnail{display:block;width:96px;height:54px;flex-shrink:0;background:#222;border-radius:4px;overflow:hidden}
+  .thumbnail img{display:block;width:100%;height:100%;object-fit:cover}
   a.title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#eee;text-decoration:none}
   a.title:hover{color:#fff;text-decoration:underline}
   .size{color:#555;font-size:.75em}
@@ -960,32 +979,6 @@ const uiInitScript = `<script>(function(){
   });
   if(discardedID){showToast(discardedID,discardedTitle);history.replaceState(null,'','/ui');}
 })();</script>`
-
-const uiWatchPage = `<!DOCTYPE html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>%s</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{background:#000;width:100vw;height:100vh;overflow:hidden;display:flex;flex-direction:column}
-  video{flex:1;width:100%%;min-height:0}
-  footer{display:flex;align-items:center;justify-content:space-between;padding:.4em .8em;background:#111}
-  footer h1{color:#eee;font-family:sans-serif;font-size:.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;margin-right:1em}
-  footer a{color:#aaa;font-family:sans-serif;font-size:.85em;text-decoration:none;white-space:nowrap}
-  footer a:hover{color:#fff}
-</style></head><body>
-<video controls autoplay playsinline>
-  <source src="/files/%s" type="%s">
-</video>
-<footer>
-  <h1>%s</h1>
-  <a href="/ui">← Back</a>
-</footer>
-<script>
-document.querySelector('video').addEventListener('loadedmetadata',function(){
-  this.requestFullscreen&&this.requestFullscreen();
-});
-</script>
-</body></html>`
 
 // ----- Helpers -----
 

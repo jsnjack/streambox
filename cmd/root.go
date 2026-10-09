@@ -209,6 +209,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}
 		},
 	})
+	defer srv.Close()
 	srv.SetUpdateID(updateID)
 
 	ssdpSrv = ssdp.New(uuid, location, iface)
