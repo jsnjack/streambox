@@ -33,6 +33,10 @@ const (
 	contentDirNS = "urn:schemas-upnp-org:service:ContentDirectory:1"
 	connMgrNS    = "urn:schemas-upnp-org:service:ConnectionManager:1"
 
+	rootObjectID         = "0"
+	browseMetadata       = "BrowseMetadata"
+	browseDirectChildren = "BrowseDirectChildren"
+
 	// regenCooldown is the minimum interval between consecutive auto-regens.
 	// Library changes during this window are coalesced into a single pending
 	// regen that fires once cooldown expires.
@@ -69,6 +73,8 @@ type Server struct {
 	identityMu sync.RWMutex
 	thumbnails *thumbnailCache
 	playback   *browserPlayback
+	clients    clientRegistry
+	rootProbes rootProbes
 
 	// Auto-regen state. A library change marks regenPending=true; the next
 	// gate evaluation (BumpUpdateID or the background ticker) fires
@@ -148,14 +154,7 @@ func New(cfg Config) *Server {
 
 // ListenAndServe starts the HTTP server.
 func (s *Server) ListenAndServe() error {
-	h := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		slog.Debug("http",
-			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
-			slog.String("remote", r.RemoteAddr))
-		s.mux.ServeHTTP(w, r)
-	}))
-	return http.ListenAndServe(fmt.Sprintf(":%d", s.cfg.Port), h)
+	return http.ListenAndServe(fmt.Sprintf(":%d", s.cfg.Port), s.logRequests(s.mux))
 }
 
 // ----- UPnP device + service descriptors -----
@@ -487,12 +486,17 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := env.Body.Browse
+	if s.rootProbes.observe(remoteIP(r), req.BrowseFlag, req.ObjectID, time.Now()) {
+		slog.Warn("dlna: client keeps requesting the root's metadata without opening it; it probably cannot parse the Browse reply",
+			slog.String("remote", r.RemoteAddr),
+			slog.String("user_agent", r.Header.Get("User-Agent")))
+	}
 
 	var objs []media.Object
 	var parentCtx string
 	total := 0
 
-	if req.BrowseFlag == "BrowseMetadata" {
+	if req.BrowseFlag == browseMetadata {
 		obj, ok := s.cfg.Library.Get(req.ObjectID)
 		if !ok {
 			soapFault(w, 701, "No Such Object")

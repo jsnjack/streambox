@@ -51,6 +51,11 @@ internal/
                               with Apache 2.0 license and provenance.
     thumbnails.go             On-demand FFmpeg frame extraction, bounded
                               in-memory LRU cache, JPEG_TN HTTP endpoint.
+    clients.go                Client family detection (Samsung by User-Agent),
+                              remembered per IP for requests without one.
+    diagnostics.go            Request logging middleware (trace: headers,
+                              SOAP bodies, reply size and chunking) and the
+                              root-Browse loop warning.
     server.go                 UPnP device + service descriptors,
                               ContentDirectory SOAP, file serving,
                               event subscriptions, web UI templates,
@@ -114,6 +119,13 @@ make build                            # multi-arch binaries under bin/
 the trace file (truncated on every start) reflects `--trace`. The "ready"
 line `streambox ready url=… name=…` is always emitted at INFO so the
 terminal shows readiness regardless of where logs go.
+
+`--trace` records every HTTP request with its headers, both SOAP bodies
+(capped at 16 KB), the reply status and size, and whether the reply was
+chunked, so one session with a new TV is enough to diagnose it. Media bodies
+are not logged. A client that sends four root `BrowseMetadata` requests
+within 10 s without browsing children logs a WARN at any level: that is how
+a TV behaves when it cannot parse the Browse reply.
 
 Smoke test: from another host on the same LAN, `curl http://<host>:8080/ui`
 and verify the directory listing renders.
