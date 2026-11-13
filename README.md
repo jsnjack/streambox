@@ -3,11 +3,8 @@ streambox
 
 `streambox` is a minimal DLNA media server that makes your video files visible
 to TVs, tablets and other UPnP/DLNA clients on your local network.
-It is developed and tested primarily against **LG TVs**, but follows the
-standard DLNA/UPnP spec and should work well on any compatible client.
-It also includes fixes for Samsung TVs, based on bugs that other DLNA servers
-found on them; these have not yet been confirmed on a Samsung TV. See
-[docs/samsung.md](docs/samsung.md).
+It is known to work on **Samsung and LG smart TVs**, and follows the
+standard DLNA/UPnP spec, so it should work on other compatible clients too.
 
 ### Description
 ```
