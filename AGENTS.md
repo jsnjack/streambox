@@ -56,6 +56,8 @@ internal/
     diagnostics.go            Request logging middleware (trace: headers,
                               SOAP bodies, reply size and chunking) and the
                               root-Browse loop warning.
+    watched.go                Decides when a client has played enough of a
+                              file to record it in the watch history.
     server.go                 UPnP device + service descriptors,
                               ContentDirectory SOAP, file serving,
                               event subscriptions, web UI templates,
@@ -82,10 +84,13 @@ internal/
    Samsung TVs also call `X_GetFeatureList`, answered with a
    `samsung.com_BASICVIEW` list that points every media type at the root,
    and `X_SetBookmark`, accepted and ignored.
-3. **File playback** — TV fetches `/files/<id>`. `serveFile` resolves the ID,
-   records it in `WatchHistory`, and streams the file with `http.ServeContent`
-   (range support, MIME, DLNA headers). File IDs are stable hashes of the
-   on-disk path — survive restarts so partial playback can resume.
+3. **File playback** — TV fetches `/files/<id>`. `serveFile` resolves the ID
+   and streams the file with `http.ServeContent` (range support, MIME, DLNA
+   headers). It records the file in `WatchHistory` once one client has
+   received 32 MiB of it, or half of a smaller file, within 10 minutes, so
+   HEAD requests, browse previews and index reads do not count. File IDs are
+   stable hashes of the on-disk path — survive restarts so partial playback
+   can resume.
 4. **Library invalidation + auto-regen** — fsnotify create/remove/rename
    events debounced 2 s. On fire: `Library.Reload` rescans, `BumpUpdateID`
    increments `SystemUpdateID` and (a) NOTIFYs subscribers, (b) marks an

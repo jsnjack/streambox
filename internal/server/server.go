@@ -75,6 +75,7 @@ type Server struct {
 	playback   *browserPlayback
 	clients    clientRegistry
 	rootProbes rootProbes
+	watching   watchTracker
 
 	// Auto-regen state. A library change marks regenPending=true; the next
 	// gate evaluation (BumpUpdateID or the background ticker) fires
@@ -641,7 +642,12 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		}))
 	}
 	if s.cfg.History != nil && !download {
-		s.cfg.History.Record(item)
+		client, size := remoteIP(r), info.Size()
+		w = &countingWriter{ResponseWriter: w, onWrite: func(n int) {
+			if s.watching.add(client, item.ID, size, int64(n), time.Now()) {
+				s.cfg.History.Record(item)
+			}
+		}}
 	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
