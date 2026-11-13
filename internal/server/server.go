@@ -464,6 +464,11 @@ func (s *Server) contentDirControl(w http.ResponseWriter, r *http.Request) {
 		soapResp(w, "GetSortCapabilities", contentDirNS, "<SortCaps></SortCaps>")
 	case "GetSearchCapabilities":
 		soapResp(w, "GetSearchCapabilities", contentDirNS, "<SearchCaps></SearchCaps>")
+	case "X_GetFeatureList":
+		soapResp(w, "X_GetFeatureList", contentDirNS, "<FeatureList>"+escXML(samsungFeatureList)+"</FeatureList>")
+	case "X_SetBookmark":
+		// Samsung TVs report resume positions here; streambox keeps no state.
+		soapResp(w, "X_SetBookmark", contentDirNS, "")
 	default:
 		slog.Warn("ContentDir: unknown action", slog.String("action", soapAction(r)))
 		soapFault(w, 401, "Invalid Action")
@@ -486,6 +491,10 @@ func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := env.Body.Browse
+	if req.ObjectID == "" {
+		// Samsung TVs from 2012 browse the root with an empty ObjectID.
+		req.ObjectID = rootObjectID
+	}
 	if s.rootProbes.observe(remoteIP(r), req.BrowseFlag, req.ObjectID, time.Now()) {
 		slog.Warn("dlna: client keeps requesting the root's metadata without opening it; it probably cannot parse the Browse reply",
 			slog.String("remote", r.RemoteAddr),
@@ -1083,6 +1092,18 @@ func protocolInfos() string {
 
 // ----- Embedded XML constants -----
 
+// samsungFeatureList answers Samsung's X_GetFeatureList. Every media type
+// points at the root, as in rclone and Jellyfin; minidlna's container IDs
+// 1, 2 and 3 would collide with streambox's All and Recent folders.
+const samsungFeatureList = `<Features xmlns="urn:schemas-upnp-org:av:avs"` +
+	` xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"` +
+	` xsi:schemaLocation="urn:schemas-upnp-org:av:avs http://www.upnp.org/schemas/av/avs.xsd">` +
+	`<Feature name="samsung.com_BASICVIEW" version="1">` +
+	`<container id="` + rootObjectID + `" type="object.item.audioItem"/>` +
+	`<container id="` + rootObjectID + `" type="object.item.videoItem"/>` +
+	`<container id="` + rootObjectID + `" type="object.item.imageItem"/>` +
+	`</Feature></Features>`
+
 const deviceDescXML = `<?xml version="1.0"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
   <specVersion><major>1</major><minor>0</minor></specVersion>
@@ -1137,6 +1158,15 @@ const contentDirSCPDXML = `<?xml version="1.0"?>
     <action><name>GetSearchCapabilities</name><argumentList>
       <argument><name>SearchCaps</name><direction>out</direction><relatedStateVariable>SearchCapabilities</relatedStateVariable></argument>
     </argumentList></action>
+    <action><name>X_GetFeatureList</name><argumentList>
+      <argument><name>FeatureList</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Featurelist</relatedStateVariable></argument>
+    </argumentList></action>
+    <action><name>X_SetBookmark</name><argumentList>
+      <argument><name>CategoryType</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_CategoryType</relatedStateVariable></argument>
+      <argument><name>RID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_RID</relatedStateVariable></argument>
+      <argument><name>PosSecond</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_PosSecond</relatedStateVariable></argument>
+      <argument><name>ObjectID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_ObjectID</relatedStateVariable></argument>
+    </argumentList></action>
   </actionList>
   <serviceStateTable>
     <stateVariable sendEvents="no"><name>A_ARG_TYPE_ObjectID</name><dataType>string</dataType></stateVariable>
@@ -1152,6 +1182,10 @@ const contentDirSCPDXML = `<?xml version="1.0"?>
     <stateVariable sendEvents="yes"><name>SystemUpdateID</name><dataType>ui4</dataType></stateVariable>
     <stateVariable sendEvents="no"><name>SortCapabilities</name><dataType>string</dataType></stateVariable>
     <stateVariable sendEvents="no"><name>SearchCapabilities</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_Featurelist</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_CategoryType</name><dataType>ui4</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_RID</name><dataType>ui4</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_PosSecond</name><dataType>ui4</dataType></stateVariable>
   </serviceStateTable>
 </scpd>`
 

@@ -78,7 +78,10 @@ internal/
    goroutines, blocks on SIGINT/SIGTERM.
 2. **DLNA browse** — TV sends SOAP `Browse` to `/contentdirectory/control`.
    `Server.browse` walks `media.Library`, builds a DIDL-Lite XML fragment, and
-   returns it wrapped in a SOAP envelope.
+   returns it wrapped in a SOAP envelope. An empty ObjectID means the root.
+   Samsung TVs also call `X_GetFeatureList`, answered with a
+   `samsung.com_BASICVIEW` list that points every media type at the root,
+   and `X_SetBookmark`, accepted and ignored.
 3. **File playback** — TV fetches `/files/<id>`. `serveFile` resolves the ID,
    records it in `WatchHistory`, and streams the file with `http.ServeContent`
    (range support, MIME, DLNA headers). File IDs are stable hashes of the

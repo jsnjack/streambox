@@ -44,6 +44,7 @@ func TestSamsungCaptures(t *testing.T) {
 		wantContainers []string
 	}{
 		{capture: "samsung/browse-root-metadata.http", wantContainers: []string{rootObjectID}},
+		{capture: "samsung/browse-empty-objectid.http", wantContainers: []string{"1", "2"}},
 	}
 	for _, test := range tests {
 		t.Run(test.capture, func(t *testing.T) {
@@ -64,6 +65,92 @@ func TestSamsungCaptures(t *testing.T) {
 				t.Errorf("containers = %v, want %v", got, test.wantContainers)
 			}
 		})
+	}
+}
+
+func TestSamsungFeatureList(t *testing.T) {
+	s := newTestServer(t, Config{Library: libraryWithFiles(t, trickyNames...)})
+	response := httptest.NewRecorder()
+	s.mux.ServeHTTP(response, loadCapture(t, "samsung/x-getfeaturelist.http"))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200:\n%s", response.Code, response.Body.String())
+	}
+	assertNoNumericReferences(t, response.Body.String())
+	var envelope struct {
+		FeatureList string `xml:"Body>X_GetFeatureListResponse>FeatureList"`
+	}
+	if err := xml.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("SOAP reply does not parse: %v", err)
+	}
+	var features struct {
+		Feature struct {
+			Name       string `xml:"name,attr"`
+			Containers []struct {
+				ID   string `xml:"id,attr"`
+				Type string `xml:"type,attr"`
+			} `xml:"container"`
+		} `xml:"Feature"`
+	}
+	if err := xml.Unmarshal([]byte(envelope.FeatureList), &features); err != nil {
+		t.Fatalf("FeatureList does not parse: %v\n%s", err, envelope.FeatureList)
+	}
+	if features.Feature.Name != "samsung.com_BASICVIEW" {
+		t.Errorf("feature = %q, want samsung.com_BASICVIEW", features.Feature.Name)
+	}
+	for _, container := range features.Feature.Containers {
+		t.Run(container.Type, func(t *testing.T) {
+			if container.ID != rootObjectID {
+				t.Errorf("container id = %q, want the root %q", container.ID, rootObjectID)
+			}
+		})
+	}
+}
+
+func TestSamsungSetBookmark(t *testing.T) {
+	s := newTestServer(t, Config{})
+	response := httptest.NewRecorder()
+	s.mux.ServeHTTP(response, soapRequest("X_SetBookmark",
+		"<CategoryType>1</CategoryType><RID>0</RID><ObjectID>1</ObjectID><PosSecond>42</PosSecond>"))
+
+	if response.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200:\n%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "X_SetBookmarkResponse") {
+		t.Errorf("reply is not an X_SetBookmarkResponse:\n%s", response.Body.String())
+	}
+}
+
+func TestContentDirectorySCPD(t *testing.T) {
+	var scpd struct {
+		Actions []struct {
+			Name      string   `xml:"name"`
+			Variables []string `xml:"argumentList>argument>relatedStateVariable"`
+		} `xml:"actionList>action"`
+		Variables []string `xml:"serviceStateTable>stateVariable>name"`
+	}
+	if err := xml.Unmarshal([]byte(contentDirSCPDXML), &scpd); err != nil {
+		t.Fatalf("SCPD does not parse: %v", err)
+	}
+	declared := map[string]bool{}
+	for _, name := range scpd.Variables {
+		declared[name] = true
+	}
+	actions := map[string]bool{}
+	for _, action := range scpd.Actions {
+		actions[action.Name] = true
+		t.Run(action.Name, func(t *testing.T) {
+			for _, variable := range action.Variables {
+				if !declared[variable] {
+					t.Errorf("argument refers to undeclared state variable %q", variable)
+				}
+			}
+		})
+	}
+	for _, want := range []string{"Browse", "X_GetFeatureList", "X_SetBookmark"} {
+		if !actions[want] {
+			t.Errorf("SCPD does not declare %s", want)
+		}
 	}
 }
 

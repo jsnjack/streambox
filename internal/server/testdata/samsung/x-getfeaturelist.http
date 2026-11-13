@@ -1,0 +1,10 @@
+POST /contentdirectory/control HTTP/1.1
+Accept: */*
+User-Agent: SEC_HHP_[TV]UE40ES8000/1.0 DLNADOC/1.50
+Host: x.x.x.x:2869
+SOAPACTION: "urn:schemas-upnp-org:service:ContentDirectory:1#X_GetFeatureList"
+CONTENT-TYPE:  text/xml; charset="utf-8"
+Content-Length: 291
+Connection: close
+
+<?xml version="1.0" encoding="utf-8"?><s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:X_GetFeatureList xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"></u:X_GetFeatureList></s:Body></s:Envelope>
