@@ -70,6 +70,14 @@ internal/
 
 ---
 
+## Where the details are
+
+| Read | Before working on |
+|---|---|
+| `docs/samsung.md` | Anything Samsung TVs see: Browse replies, SOAP actions, file serving, SSDP timing. Lists what is done, what is deferred, and the field-test protocol. |
+
+---
+
 ## Key Flows
 
 1. **Startup** — `runServe` loads defaults, overlays the TOML file (if any),

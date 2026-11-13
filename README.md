@@ -5,6 +5,9 @@ streambox
 to TVs, tablets and other UPnP/DLNA clients on your local network.
 It is developed and tested primarily against **LG TVs**, but follows the
 standard DLNA/UPnP spec and should work well on any compatible client.
+It also includes fixes for Samsung TVs, based on bugs that other DLNA servers
+found on them; these have not yet been confirmed on a Samsung TV. See
+[docs/samsung.md](docs/samsung.md).
 
 ### Description
 ```
