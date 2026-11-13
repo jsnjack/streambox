@@ -224,4 +224,7 @@ on every process start.
   ~`debounce + cooldown + checkInterval` ≈ 37 s.
 - The auto-regen `OnAutoRegen` callback is nil-checked rather than asserted —
   tests construct a `Server` without it.
-
+- DLNA XML must never contain numeric character references such as `&#34;`:
+  Samsung TVs then list the server but show its folders as empty. Escape
+  with `escXML`, which writes the five named entities; never use
+  `xml.EscapeText`. The replay tests in `samsung_test.go` check every reply.

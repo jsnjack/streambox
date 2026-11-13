@@ -164,7 +164,7 @@ func (s *Server) deviceDesc(w http.ResponseWriter, r *http.Request) {
 	s.identityMu.RLock()
 	name, uuid := s.cfg.Name, s.cfg.UUID
 	s.identityMu.RUnlock()
-	_, err := fmt.Fprintf(w, deviceDescXML, name, uuid)
+	_, err := fmt.Fprintf(w, deviceDescXML, escXML(name), uuid)
 	logFprintErr(r.Context(), "write device.xml", err)
 }
 
@@ -1044,12 +1044,28 @@ func soapFault(w http.ResponseWriter, code int, desc string) {
 	logFprintErr(context.Background(), "soap: write fault", err)
 }
 
+// xmlEscaper writes the five predefined XML entities by name. Samsung TVs
+// cannot parse numeric references such as &#34;, which xml.EscapeText emits,
+// and then show folders as empty (rclone commit 8502532c22).
+var xmlEscaper = strings.NewReplacer(
+	`&`, "&amp;", `<`, "&lt;", `>`, "&gt;", `"`, "&quot;", `'`, "&apos;",
+)
+
 func escXML(s string) string {
-	var b strings.Builder
-	if err := xml.EscapeText(&b, []byte(s)); err != nil {
-		slog.Log(context.Background(), loglevel.LevelTrace, "escXML: escape text", "err", err)
+	return xmlEscaper.Replace(strings.Map(xmlChar, s))
+}
+
+// xmlChar turns tabs and line breaks into spaces, which keeps them from
+// needing numeric references, and replaces characters that XML 1.0 forbids.
+func xmlChar(r rune) rune {
+	switch {
+	case r == '\t' || r == '\n' || r == '\r':
+		return ' '
+	case r >= 0x20 && r <= 0xD7FF, r >= 0xE000 && r <= 0xFFFD, r >= 0x10000 && r <= 0x10FFFF:
+		return r
+	default:
+		return '�'
 	}
-	return b.String()
 }
 
 func protocolInfos() string {
